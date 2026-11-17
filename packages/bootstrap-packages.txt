@@ -13,7 +13,6 @@ zsh
 figlet
 ruby
 boxes
-gum
 bat
 lsd
 logo-ls
