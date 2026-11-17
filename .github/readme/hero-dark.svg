@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="230" viewBox="0 0 840 230" role="img" aria-label="Shellterm: a terminal for Android">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b1d2a"/><stop offset="1" stop-color="#10121b"/></linearGradient>
+    <linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f9bff"/><stop offset="1" stop-color="#c6a6ff"/></linearGradient>
+  </defs>
+  <rect width="840" height="230" rx="36" fill="url(#bg)"/>
+  <rect x="48" y="52" width="126" height="126" rx="38" fill="url(#ac)"/>
+  <path d="M86 92 L122 115 L86 138" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="128" y="140" width="28" height="10" rx="5" fill="#ffffff"/>
+  <text x="206" y="124" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="78" font-weight="700" fill="#f2f3ff">Shellterm</text>
+  <text x="210" y="164" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="25" fill="#aab0d6">A real terminal for Android, with packages</text>
+  <text x="210" y="198" font-family="ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace" font-size="20" fill="#7ee0b0">$ pkg install git</text>
+</svg>
