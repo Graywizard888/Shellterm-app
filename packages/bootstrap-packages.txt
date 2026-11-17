@@ -26,3 +26,8 @@ eza
 timg
 logo-ls
 fd
+
+# termux-toast, termux-clipboard-get/set, termux-vibrate, termux-battery-status, termux-notification, termux-share:
+# the app itself answers these (see "termux-api" in the app's README); other termux-* API commands report that they
+# are not available. Depends on termux-am, which the bootstrap already has.
+termux-api
