@@ -113,7 +113,7 @@ Shellterm keeps the Termux way of working and builds its own terminal engine and
 
 1. Download `shellterm-release.apk` from the [latest release](https://github.com/Graywizard888/Shellterm-app/releases).
 2. Open it and allow installs from your browser or file manager when Android asks.
-3. Start Shellterm and wait for the base system to download and unpack. It needs a connection, about 30 MB for the download.
+3. Start Shellterm and wait for the base system to download and unpack. It needs a connection, about 33 MB for the download.
 4. Let the first-run package upgrade finish, then accept or skip the style setup.
 
 Updates install over the previous version as long as they are signed with the same key. Obtainium can follow this
