@@ -3,3 +3,4 @@
 # fastest mirror answers first, and gives apt that group's mirrors, fastest first. Only copies of this repository belong
 # here: Termux's own mirrors serve packages built for com.termux, which do not run under this app.
 global https://graywizard888.github.io/Shellterm-app/apt
+global https://raw.githubusercontent.com/Graywizard888/Shellterm-app/apt-mirror

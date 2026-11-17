@@ -42,6 +42,23 @@ jobs:
           # The mirror groups the app times on first launch (see packages/mirrors.txt).
           cp packages/mirrors.txt site/mirrors.txt
 
+      # A second copy of the repository on another host (raw.githubusercontent.com, from the apt-mirror branch), so a
+      # network that cannot resolve github.io still reaches the packages. A fresh one-commit branch each run keeps the
+      # repository small. Copied out of site/ first so the Pages artifact does not get a .git folder.
+      - name: Publish the apt mirror branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mirror="$RUNNER_TEMP/apt-mirror"
+          cp -r site/apt "$mirror"
+          cd "$mirror"
+          git init -q -b apt-mirror
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Apt repository built from run ${GITHUB_RUN_ID}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apt-mirror
+
       - name: Patch the bootstrap
         run: |
           owner=${GITHUB_REPOSITORY_OWNER,,}
