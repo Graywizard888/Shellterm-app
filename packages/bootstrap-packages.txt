@@ -22,8 +22,7 @@ ruby
 boxes
 gum
 bat
-eza
-timg
+lsd
 logo-ls
 fd
 
