@@ -1,0 +1,5 @@
+# Mirror groups of the Shellterm package repository, read by the app on first launch.
+# One mirror per line: "<group> <https url of the apt repository>". The app times every mirror, picks the group whose
+# fastest mirror answers first, and gives apt that group's mirrors, fastest first. Only copies of this repository belong
+# here: Termux's own mirrors serve packages built for com.termux, which do not run under this app.
+global https://graywizard888.github.io/Shellterm-app/apt

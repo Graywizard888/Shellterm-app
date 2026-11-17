@@ -1,0 +1,313 @@
+"""Tests for patch_termux.py. Run: python3 -m unittest discover -s packages -v"""
+import gzip
+import hashlib
+import io
+import lzma
+import tarfile
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+import patch_termux as pt
+
+OLD = "com.termux"
+NEW = "com.gwterm"
+PREFIX_OLD = f"/data/data/{OLD}/files/usr"
+PREFIX_NEW = f"/data/data/{NEW}/files/usr"
+
+
+def md5(data: bytes) -> str:
+    return hashlib.md5(data).hexdigest()
+
+
+def make_tar(entries: list[tuple[str, bytes | str]], fmt=tarfile.GNU_FORMAT) -> bytes:
+    """entries: (name, bytes) for a file, (name, "-> target") for a symlink, (name, "dir") for a directory."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:", format=fmt) as tar:
+        for name, content in entries:
+            info = tarfile.TarInfo(name)
+            info.mtime = 1_700_000_000
+            if content == "dir":
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                tar.addfile(info)
+            elif isinstance(content, str) and content.startswith("-> "):
+                info.type = tarfile.SYMTYPE
+                info.linkname = content[3:]
+                info.mode = 0o777
+                tar.addfile(info)
+            else:
+                info.size = len(content)
+                info.mode = 0o755
+                tar.addfile(info, io.BytesIO(content))
+    return lzma.compress(buffer.getvalue(), format=lzma.FORMAT_XZ)
+
+
+def read_tar(data: bytes) -> dict[str, tuple[int, bytes | str]]:
+    out = {}
+    with tarfile.open(fileobj=io.BytesIO(lzma.decompress(data)), mode="r:") as tar:
+        for member in tar:
+            if member.isfile():
+                out[member.name] = (member.mode, tar.extractfile(member).read())
+            elif member.issym():
+                out[member.name] = (member.mode, "-> " + member.linkname)
+            else:
+                out[member.name] = (member.mode, "dir")
+    return out
+
+
+ELF_LIKE = b"\x7fELF" + b"\0" * 12 + f"RUNPATH={PREFIX_OLD}/lib".encode() + b"\0" + b"tail-bytes"
+MAN_PAGE = f"The tool lives in {PREFIX_OLD}/bin\n".encode()
+
+
+def sample_deb() -> bytes:
+    data = make_tar([
+        (f"./data/data/{OLD}/files/usr/bin/tool", ELF_LIKE),
+        (f"./data/data/{OLD}/files/usr/bin/tool-link", f"-> {PREFIX_OLD}/bin/tool"),
+        (f"./data/data/{OLD}/files/usr/share/man/man1/tool.1.gz", gzip.compress(MAN_PAGE)),
+        (f"./data/data/{OLD}/files/usr/etc/tool.conf", f"prefix={PREFIX_OLD}\n".encode()),
+        ("./data/data/", "dir"),
+    ])
+    md5sums = "".join(
+        f"{md5(content)}  data/data/{OLD}/files/usr/{path}\n"
+        for path, content in [("bin/tool", ELF_LIKE), ("etc/tool.conf", f"prefix={PREFIX_OLD}\n".encode())]
+    ).encode()
+    control = make_tar([
+        ("./control", b"Package: tool\nVersion: 1.0\nArchitecture: aarch64\nDescription: tool for com.termux\n"),
+        ("./md5sums", md5sums),
+        ("./conffiles", f"{PREFIX_OLD}/etc/tool.conf\n".encode()),
+        ("./postinst", f"#!{PREFIX_OLD}/bin/sh\necho done\n".encode()),
+    ])
+    return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
+
+
+class PatchBytes(unittest.TestCase):
+    def test_names_have_the_same_length(self):
+        self.assertEqual(len(pt.OLD), len(pt.NEW))
+
+    def test_replaces_every_occurrence_and_keeps_length(self):
+        text = f"{PREFIX_OLD}/bin:{PREFIX_OLD}/lib".encode()
+        patched = pt.patch_bytes(text)
+        self.assertEqual(len(patched), len(text))
+        self.assertNotIn(pt.OLD, patched)
+        self.assertEqual(patched.replace(pt.NEW, pt.OLD), text)
+
+    def test_gzip_is_opened_patched_and_deterministic(self):
+        patched = pt.patch_file("tool.1.gz", gzip.compress(MAN_PAGE))
+        self.assertEqual(gzip.decompress(patched), MAN_PAGE.replace(pt.OLD, pt.NEW))
+        self.assertEqual(patched, pt.patch_file("tool.1.gz", gzip.compress(MAN_PAGE)))
+
+    def test_gzip_without_the_name_is_left_alone(self):
+        clean = gzip.compress(b"nothing to see")
+        self.assertEqual(pt.patch_file("x.gz", clean), clean)
+
+    def test_broken_gzip_does_not_crash(self):
+        self.assertEqual(pt.patch_file("x.gz", b"\x1f\x8bnot really gzip"), b"\x1f\x8bnot really gzip")
+
+
+class PatchDeb(unittest.TestCase):
+    def setUp(self):
+        members = dict(pt.read_ar(pt.patch_deb(sample_deb())))
+        self.data = read_tar(members["data.tar.xz"])
+        self.control = read_tar(members["control.tar.xz"])
+        self.members = members
+
+    def test_file_names_move_to_the_new_app(self):
+        self.assertIn(f"./data/data/{NEW}/files/usr/bin/tool", self.data)
+        self.assertFalse([n for n in self.data if OLD in n])
+
+    def test_content_is_patched_and_keeps_its_mode(self):
+        mode, content = self.data[f"./data/data/{NEW}/files/usr/bin/tool"]
+        self.assertEqual(content, ELF_LIKE.replace(pt.OLD, pt.NEW))
+        self.assertEqual(len(content), len(ELF_LIKE))
+        self.assertEqual(mode, 0o755)
+
+    def test_symlink_target_is_patched(self):
+        _, target = self.data[f"./data/data/{NEW}/files/usr/bin/tool-link"]
+        self.assertEqual(target, f"-> {PREFIX_NEW}/bin/tool")
+
+    def test_man_page_inside_gzip_is_patched(self):
+        _, packed = self.data[f"./data/data/{NEW}/files/usr/share/man/man1/tool.1.gz"]
+        self.assertIn(PREFIX_NEW.encode(), gzip.decompress(packed))
+
+    def test_control_scripts_are_patched(self):
+        self.assertIn(PREFIX_NEW.encode(), self.control["./postinst"][1])
+        self.assertIn(PREFIX_NEW.encode(), self.control["./conffiles"][1])
+
+    def test_md5sums_match_the_patched_files(self):
+        listed = dict(line.split("  ", 1)[::-1] for line in self.control["./md5sums"][1].decode().splitlines())
+        self.assertEqual(len(listed), 2)
+        for path, digest in listed.items():
+            _, content = self.data["./" + path]
+            self.assertEqual(md5(content), digest, path)
+
+    def test_verifier_accepts_patched_and_rejects_stock(self):
+        self.assertEqual(pt.verify_deb("good", pt.patch_deb(sample_deb())), [])
+        self.assertTrue(pt.verify_deb("stock", sample_deb()))
+
+    def test_package_is_readable_by_dpkg(self):
+        import shutil
+        import subprocess
+        if not shutil.which("dpkg-deb"):
+            self.skipTest("dpkg-deb not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            deb = Path(tmp, "tool.deb")
+            deb.write_bytes(pt.patch_deb(sample_deb()))
+            listing = subprocess.run(["dpkg-deb", "-c", str(deb)], capture_output=True, text=True, check=True).stdout
+            self.assertIn(f"data/data/{NEW}/files/usr/bin/tool", listing)
+            info = subprocess.run(["dpkg-deb", "-f", str(deb), "Package"], capture_output=True, text=True, check=True)
+            self.assertEqual(info.stdout.strip(), "tool")
+
+
+STATUS = f"""Package: tool
+Status: install ok installed
+Version: 1.0
+Conffiles:
+ {PREFIX_OLD}/etc/tool.conf {md5(f"prefix={PREFIX_OLD}\n".encode())}
+
+Package: other
+Status: install ok installed
+Version: 2.0
+"""
+
+
+def sample_bootstrap(path: Path) -> None:
+    conf = f"prefix={PREFIX_OLD}\n".encode()
+    md5sums = (f"{md5(ELF_LIKE)}  data/data/{OLD}/files/usr/bin/tool\n"
+               f"{md5(conf)}  data/data/{OLD}/files/usr/etc/tool.conf\n").encode()
+    files = {
+        "bin/tool": ELF_LIKE,
+        "etc/tool.conf": conf,
+        "etc/apt/sources.list": b"deb https://packages-cf.termux.dev/apt/termux-main/ stable main\n",
+        "var/lib/dpkg/status": STATUS.encode(),
+        "var/lib/dpkg/info/tool.md5sums": md5sums,
+        "var/lib/dpkg/info/tool.list": f"{PREFIX_OLD}/bin/tool\n".encode(),
+        "SYMLINKS.txt": f"{PREFIX_OLD}/bin/tool←./bin/tool-link\n".encode(),
+    }
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("bin/"), b"")
+        for name, content in files.items():
+            info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+            info.external_attr = (0o100755 if name.startswith("bin/") else 0o100644) << 16
+            zf.writestr(info, content)
+
+
+class PatchBootstrap(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.src = Path(self.tmp.name, "stock.zip")
+        self.dst = Path(self.tmp.name, "out", "bootstrap-aarch64.zip")
+        sample_bootstrap(self.src)
+        pt.patch_bootstrap(self.src, self.dst, "https://example.github.io/Shellterm/apt")
+        with zipfile.ZipFile(self.dst) as zf:
+            self.files = {i.filename: zf.read(i) for i in zf.infolist() if not i.is_dir()}
+            self.modes = {i.filename: i.external_attr >> 16 for i in zf.infolist()}
+
+    def test_files_and_symlink_list_are_patched(self):
+        self.assertEqual(self.files["bin/tool"], ELF_LIKE.replace(pt.OLD, pt.NEW))
+        self.assertIn(PREFIX_NEW, self.files["SYMLINKS.txt"].decode())
+        self.assertIn(PREFIX_NEW, self.files["var/lib/dpkg/info/tool.list"].decode())
+
+    def test_permissions_survive(self):
+        self.assertEqual(self.modes["bin/tool"], 0o100755)
+
+    def test_package_checksums_match_the_new_files(self):
+        for line in self.files["var/lib/dpkg/info/tool.md5sums"].decode().splitlines():
+            digest, path = line.split("  ")
+            self.assertEqual(md5(self.files[path.removeprefix(pt.DATA_ROOT)]), digest, path)
+
+    def test_config_file_hashes_in_the_status_file_match(self):
+        status = self.files["var/lib/dpkg/status"].decode()
+        conf = self.files["etc/tool.conf"]
+        self.assertIn(f" {PREFIX_NEW}/etc/tool.conf {md5(conf)}", status)
+        self.assertIn("Package: other", status)
+
+    def test_apt_points_at_our_repository(self):
+        sources = self.files["etc/apt/sources.list"].decode()
+        self.assertIn("deb [trusted=yes] https://example.github.io/Shellterm/apt stable main", sources)
+        self.assertNotIn("termux.dev", sources)
+
+    def test_sha256_file_matches(self):
+        recorded = Path(str(self.dst) + ".sha256").read_text().split()
+        self.assertEqual(recorded[0], hashlib.sha256(self.dst.read_bytes()).hexdigest())
+        self.assertEqual(recorded[1], "bootstrap-aarch64.zip")
+
+    def test_verifier(self):
+        self.assertEqual(pt.verify_bootstrap(self.dst), [])
+        self.assertTrue(pt.verify_bootstrap(self.src))
+
+    def test_installed_package_names(self):
+        self.assertEqual(pt.bootstrap_package_names(self.src), ["tool", "other"])
+
+
+INDEX = """Package: a
+Version: 1:1.0
+Filename: pool/main/a/a/a_1:1.0_aarch64.deb
+SHA256: 00
+Size: 10
+Depends: b (>= 1), c | d
+
+Package: b
+Version: 2.0
+Filename: pool/main/b/b/b_2.0_aarch64.deb
+SHA256: 00
+Size: 20
+Pre-Depends: e
+
+Package: d
+Version: 3.0
+Filename: pool/main/d/d/d_3.0_all.deb
+SHA256: 00
+Size: 30
+Provides: virtual-d
+
+Package: e
+Version: 4.0
+Filename: pool/main/e/e/e_4.0_aarch64.deb
+SHA256: 00
+Size: 40
+Depends: virtual-d
+"""
+
+
+class Resolve(unittest.TestCase):
+    def setUp(self):
+        self.index = pt.parse_index(INDEX)
+
+    def names(self, wanted):
+        return [e.name for e in pt.resolve(self.index, wanted)]
+
+    def test_follows_depends_and_first_available_alternative(self):
+        self.assertEqual(self.names(["a"]), ["a", "b", "d", "e"])
+
+    def test_virtual_packages_resolve_to_their_provider(self):
+        self.assertEqual(self.names(["e"]), ["d", "e"])
+
+    def test_unknown_package_is_an_error(self):
+        with self.assertRaisesRegex(RuntimeError, "No package named 'nope'"):
+            self.names(["nope"])
+
+    def test_missing_dependency_is_an_error(self):
+        broken = pt.parse_index("Package: x\nVersion: 1\nFilename: p/x.deb\nSHA256: 0\nSize: 1\nDepends: ghost\n")
+        with self.assertRaisesRegex(RuntimeError, "ghost"):
+            pt.resolve(broken, ["x"])
+
+    def test_file_names_drop_the_epoch_and_keep_all_arch(self):
+        self.assertEqual(pt.deb_file_name(self.index["a"]), "a_1.0_aarch64.deb")
+        self.assertEqual(pt.deb_file_name(self.index["d"]), "d_3.0_all.deb")
+
+    def test_package_list_skips_comments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "list.txt")
+            path.write_text("# header\n\nnano\n  git  \n")
+            self.assertEqual(pt.read_package_list(path), ["nano", "git"])
+
+    def test_real_package_list_only_names_packages_once(self):
+        names = pt.read_package_list(Path(__file__).with_name("bootstrap-packages.txt"))
+        self.assertEqual(len(names), len(set(names)))
+
+
+if __name__ == "__main__":
+    unittest.main()
