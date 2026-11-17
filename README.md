@@ -6,12 +6,6 @@
 </div>
 
 <p align="center">
-  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.gwterm%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FGraywizard888%2FShellterm-app%22%2C%22author%22%3A%22Graywizard888%22%2C%22name%22%3A%22Shellterm%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Atrue%2C%5C%22autoApkFilterByArch%5C%22%3Atrue%2C%5C%22trackOnly%5C%22%3Afalse%7D%22%2C%22overrideSource%22%3Anull%7D">
-    <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="80" />
-  </a>
-</p>
-
-<p align="center">
   <b>A Termux-like terminal for Android with its own emulator core, real <code>pkg</code> / <code>apt</code> packages and a liquid-glass UI.</b>
   <br>
   <i>No ads. No trackers. Just a terminal.</i>
@@ -116,8 +110,7 @@ Shellterm keeps the Termux way of working and builds its own terminal engine and
 3. Start Shellterm and wait for the base system to download and unpack. It needs a connection, about 33 MB for the download.
 4. Let the first-run package upgrade finish, then accept or skip the style setup.
 
-Updates install over the previous version as long as they are signed with the same key. Obtainium can follow this
-repository for you with the button at the top.
+Updates install over the previous version as long as they are signed with the same key.
 
 **Requirements:** Android 10 or newer, a 64-bit ARM (arm64-v8a) phone or tablet.
 
