@@ -74,6 +74,8 @@ Shellterm keeps the Termux way of working and builds its own terminal engine and
 | **Own apt repository** | Termux's packages renamed for `com.gwterm`, published from this repository |
 | **Exec hook** | Programs in the app's data folder are started through the system loader, which Android 10+ requires |
 | **First-run upgrade** | `pkg update && pkg upgrade` runs visibly in the terminal before the style setup is offered |
+| **Termux helpers** | The app answers Termux's `am` socket, so `am`, `termux-open`, `termux-open-url`, `termux-setup-storage` and `termux-reload-settings` work as in Termux |
+| **`termux-api`** | `termux-toast`, `termux-clipboard-get/set`, `termux-vibrate`, `termux-battery-status`, `termux-notification`, `termux-notification-remove` and `termux-share` are answered by the app itself, no extra APK |
 
 </details>
 
