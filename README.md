@@ -124,6 +124,7 @@ and published from here:
 | What | Where |
 |---|---|
 | **apt repository** | `https://graywizard888.github.io/Shellterm-app/apt` (GitHub Pages) |
+| **Second copy** | `https://raw.githubusercontent.com/Graywizard888/Shellterm-app/apt-mirror` (the `apt-mirror` branch, rebuilt by every run), for networks that cannot reach `github.io` |
 | **Mirror list** | `https://graywizard888.github.io/Shellterm-app/mirrors.txt`, source in [`packages/mirrors.txt`](packages/mirrors.txt) |
 | **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, used when Termux's own download fails |
 
