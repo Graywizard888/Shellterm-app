@@ -2,8 +2,9 @@
 # Names are Termux package (deb) names; patch_termux.py adds whatever they depend on.
 # The base system itself is Termux's own bootstrap zip, patched for this app (see patch_termux.py).
 
-# Needed by T-Header (it unpacks the Nerd Font zip)
+# unzip unpacks T-Header's Nerd Font zip; nano is the editor
 unzip
+nano
 
 # Terminal style setup (T-Header): installed later with pkg install
 git
