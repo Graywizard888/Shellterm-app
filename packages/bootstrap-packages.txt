@@ -1,0 +1,28 @@
+# Packages that go into the Shellterm apt repository on top of everything the Termux bootstrap already installs.
+# Names are Termux package (deb) names; patch_termux.py adds whatever they depend on.
+# The base system itself is Termux's own bootstrap zip, patched for this app (see patch_termux.py).
+
+# Handy tools that come with a Termux install
+ed
+debianutils
+dos2unix
+inetutils
+lsof
+nano
+net-tools
+patch
+unzip
+
+# Terminal style setup (T-Header): installed later with pkg install
+git
+fzf
+zsh
+figlet
+ruby
+boxes
+gum
+bat
+eza
+timg
+logo-ls
+fd

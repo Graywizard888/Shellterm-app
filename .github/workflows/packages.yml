@@ -1,0 +1,79 @@
+name: Packages
+
+# Takes Termux's own prebuilt packages and renames the app inside them (com.termux -> com.gwterm; same length, so the
+# binaries stay valid). Publishes the result as an apt repository on GitHub Pages and a patched copy of Termux's
+# bootstrap as the "bootstrap" release (the app's fallback when Termux's own download fails).
+# Nothing is compiled: a run takes a few minutes.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: packages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils dpkg-dev
+
+      - name: Test the patcher
+        run: python3 -m unittest discover -s packages -v
+
+      - name: Download Termux's bootstrap
+        run: |
+          mkdir -p work
+          curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors -o work/stock-bootstrap.zip \
+            https://github.com/termux/termux-packages/releases/latest/download/bootstrap-aarch64.zip
+
+      - name: Patch the packages
+        run: python3 packages/patch_termux.py repo --bootstrap work/stock-bootstrap.zip --out work/debs
+
+      - name: Make the apt repository
+        run: |
+          bash packages/make-repo.sh work/debs site/apt
+          # The mirror groups the app times on first launch (see packages/mirrors.txt).
+          cp packages/mirrors.txt site/mirrors.txt
+
+      - name: Patch the bootstrap
+        run: |
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          repo=${GITHUB_REPOSITORY#*/}
+          python3 packages/patch_termux.py bootstrap --stock work/stock-bootstrap.zip \
+            --out out/bootstrap-aarch64.zip --repo-url "https://$owner.github.io/$repo/apt"
+
+      # Fails the run if any trace of the old name or any stale checksum is left.
+      - name: Verify
+        run: python3 packages/patch_termux.py verify --bootstrap out/bootstrap-aarch64.zip --debs work/debs
+
+      - name: Publish the bootstrap release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view bootstrap > /dev/null 2>&1 || \
+            gh release create bootstrap --title "Base system" --notes "Patched copy of Termux's bootstrap, the app's fallback. Built by the Packages workflow." --prerelease
+          gh release upload bootstrap out/bootstrap-aarch64.zip out/bootstrap-aarch64.zip.sha256 --clobber
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
