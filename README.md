@@ -116,24 +116,27 @@ Updates install over the previous version as long as they are signed with the sa
 
 ## Packages
 
-Termux's prebuilt packages are renamed byte for byte (`com.termux` to `com.gwterm`, same length, nothing is compiled)
-and published from here:
+Termux's prebuilt packages are renamed byte for byte (`com.termux` to `com.gwterm`, same length, nothing is compiled).
+Every package of Termux's main repository (about 3,000, 9.5 GB) is published from here as release assets:
 
 | What | Where |
 |---|---|
-| **apt repository** | `https://graywizard888.github.io/Shellterm-app/apt` (GitHub Pages) |
-| **Second copy** | `https://raw.githubusercontent.com/Graywizard888/Shellterm-app/apt-mirror` (the `apt-mirror` branch, rebuilt by every run), for networks that cannot reach `github.io` |
-| **Mirror list** | `https://graywizard888.github.io/Shellterm-app/mirrors.txt`, source in [`packages/mirrors.txt`](packages/mirrors.txt) |
-| **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, used when Termux's own download fails |
+| **Packages** | The releases `apt-1` to `apt-4`: the patched `.deb` files in four lots of about equal size (a release holds at most 1,000 files), each with a flat apt index |
+| **apt source lines** | `deb [trusted=yes] https://github.com/Graywizard888/Shellterm-app/releases/download/apt-N /` for N = 1 to 4 |
+| **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, apt pointed at the four releases; used when Termux's own download fails |
+| **Older apps** | Versions up to 1.0.2 read the earlier repository on GitHub Pages (`https://graywizard888.github.io/Shellterm-app/apt`). It is no longer rebuilt and stays as it was |
 
-Everything is built by the **Packages** workflow (Actions tab, run manually, a few minutes):
+Everything is built by the **Packages** workflow (Actions tab). Started by hand it patches, checks and publishes; on a
+pull request it only checks (each package is downloaded, patched, verified and deleted again, nothing is stored). Each
+package is checked for the old name in paths, content and checksums, for PAX tar headers that dpkg refuses, and that
+`dpkg-deb` can read and unpack it. Four jobs run in parallel, one per lot.
 
 ```bash
 python3 packages/patch_termux.py --help
 python3 -m unittest discover -s packages   # the patcher's tests
+# try a few packages on your own machine (downloads them, patches, checks, deletes):
+python3 packages/patch_termux.py repo --all --only jq,wget --check --discard --out /tmp/out
 ```
-
-One-time setup for a fork: Settings > Pages > Source: GitHub Actions.
 
 ---
 

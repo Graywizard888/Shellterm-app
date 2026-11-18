@@ -1,31 +1,117 @@
 name: Packages
 
-# Takes Termux's own prebuilt packages and renames the app inside them (com.termux -> com.gwterm; same length, so the
-# binaries stay valid). Publishes the result as an apt repository on GitHub Pages and a patched copy of Termux's
-# bootstrap as the "bootstrap" release (the app's fallback when Termux's own download fails).
-# Nothing is compiled: a run takes a few minutes.
+# Takes every package of Termux's main repository (3,000+, about 9.5 GB) and renames the app inside them
+# (com.termux -> com.gwterm; same length, so the binaries stay valid). Nothing is compiled.
+#
+# Where things go (only when the workflow is started by hand, with "Run workflow"):
+#   releases apt-1 .. apt-4   the patched .deb files, split into four lots of about equal size, each with a flat apt
+#                             index (Packages, Packages.gz, Packages.xz, Release). A release holds at most 1,000 files,
+#                             so one release cannot take them all.
+#   release bootstrap         Termux's bootstrap zip patched for this app, with apt pointed at the four releases
+#                             (the app's fallback when Termux's own download fails).
+#
+# On a pull request the same work is done as a check: every package is downloaded, patched, verified and deleted
+# again, and nothing is published. Packages are checked for the old name in paths, content and checksums, PAX tar
+# headers dpkg refuses, and that dpkg itself can read and unpack them.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "packages/**"
+      - ".github/workflows/packages.yml"
 
 concurrency:
-  group: packages
+  group: packages-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: write
 
+env:
+  SHARDS: 4
+
 jobs:
-  build:
+  shard:
+    name: Packages ${{ matrix.shard }} of 4
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y apt-utils dpkg-dev
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev xz-utils
 
       - name: Test the patcher
         run: python3 -m unittest discover -s packages -v
+
+      # With a pull request every package is deleted right after it is checked, so the disk never fills. When
+      # publishing, the patched files are kept for the upload (about 2.4 GB per lot).
+      - name: Patch and check this lot
+        env:
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          flags=(--check)
+          [ "$PUBLISH" = true ] || flags+=(--discard)
+          python3 packages/patch_termux.py repo --all --shard "${{ matrix.shard }}/$SHARDS" \
+            --jobs "$(nproc)" "${flags[@]}" \
+            --out work/debs --scratch "$RUNNER_TEMP/scratch" --report work/report.jsonl
+
+      - name: Summary
+        if: always()
+        run: |
+          [ -f work/report.jsonl ] || exit 0
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          rows = [json.loads(line) for line in open("work/report.jsonl")]
+          bad = [r for r in rows if r["problems"]]
+          warn = [r for r in rows if r["warnings"]]
+          print(f"### Lot ${{ matrix.shard }} of ${{ env.SHARDS }}")
+          print(f"- {len(rows)} packages, {sum(r['size'] for r in rows) / 1e6:.0f} MB downloaded, "
+                f"{sum(r.get('patched_size', 0) for r in rows) / 1e6:.0f} MB patched")
+          print(f"- {len(bad)} with problems, {len(warn)} with warnings")
+          for r in bad:
+              for problem in r["problems"][:5]:
+                  print(f"  - problem: {problem}")
+          for r in warn:
+              for warning in r["warnings"][:5]:
+                  print(f"  - warning: {warning}")
+          EOF
+
+      - name: Make the flat apt repository
+        if: github.event_name == 'workflow_dispatch'
+        run: bash packages/make-flat-repo.sh work/debs
+
+      # The release is rebuilt from scratch each run: files of packages that are gone from Termux are removed,
+      # everything else is replaced. Up to 1,000 files fit in one release; a lot has about 760.
+      - name: Publish release apt-${{ matrix.shard }}
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="apt-${{ matrix.shard }}"
+          gh release view "$tag" > /dev/null 2>&1 || \
+            gh release create "$tag" --prerelease --latest=false --title "Packages ${{ matrix.shard }} of $SHARDS" \
+              --notes "Lot ${{ matrix.shard }} of $SHARDS of the Shellterm package repository: Termux's packages renamed for com.gwterm, as a flat apt repository. apt reads it with: deb [trusted=yes] https://github.com/$GITHUB_REPOSITORY/releases/download/$tag /  Built by the Packages workflow."
+          gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
+            [ -e "work/debs/$asset" ] || gh release delete-asset "$tag" "$asset" --yes
+          done
+          cd work/debs
+          # Packages.xz and Release last: apt must never see an index that names files not yet uploaded.
+          gh release upload "$tag" --clobber *.deb
+          gh release upload "$tag" --clobber Packages Packages.gz Packages.xz Release
+          echo "Released: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
+
+  bootstrap:
+    name: Bootstrap
+    needs: shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Download Termux's bootstrap
         run: |
@@ -33,64 +119,24 @@ jobs:
           curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors -o work/stock-bootstrap.zip \
             https://github.com/termux/termux-packages/releases/latest/download/bootstrap-aarch64.zip
 
-      - name: Patch the packages
-        run: python3 packages/patch_termux.py repo --bootstrap work/stock-bootstrap.zip --out work/debs
-
-      - name: Make the apt repository
-        run: |
-          bash packages/make-repo.sh work/debs site/apt
-          # The mirror groups the app times on first launch (see packages/mirrors.txt).
-          cp packages/mirrors.txt site/mirrors.txt
-
-      # A second copy of the repository on another host (raw.githubusercontent.com, from the apt-mirror branch), so a
-      # network that cannot resolve github.io still reaches the packages. A fresh one-commit branch each run keeps the
-      # repository small. Copied out of site/ first so the Pages artifact does not get a .git folder.
-      - name: Publish the apt mirror branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mirror="$RUNNER_TEMP/apt-mirror"
-          cp -r site/apt "$mirror"
-          cd "$mirror"
-          git init -q -b apt-mirror
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -q -m "Apt repository built from run ${GITHUB_RUN_ID}"
-          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apt-mirror
-
       - name: Patch the bootstrap
         run: |
-          owner=${GITHUB_REPOSITORY_OWNER,,}
-          repo=${GITHUB_REPOSITORY#*/}
+          args=()
+          for k in $(seq 1 "$SHARDS"); do
+            args+=(--flat-repo "https://github.com/$GITHUB_REPOSITORY/releases/download/apt-$k")
+          done
           python3 packages/patch_termux.py bootstrap --stock work/stock-bootstrap.zip \
-            --out out/bootstrap-aarch64.zip --repo-url "https://$owner.github.io/$repo/apt"
+            --out out/bootstrap-aarch64.zip "${args[@]}"
 
       # Fails the run if any trace of the old name or any stale checksum is left.
       - name: Verify
-        run: python3 packages/patch_termux.py verify --bootstrap out/bootstrap-aarch64.zip --debs work/debs
+        run: python3 packages/patch_termux.py verify --bootstrap out/bootstrap-aarch64.zip
 
       - name: Publish the bootstrap release
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view bootstrap > /dev/null 2>&1 || \
             gh release create bootstrap --title "Base system" --notes "Patched copy of Termux's bootstrap, the app's fallback. Built by the Packages workflow." --prerelease
           gh release upload bootstrap out/bootstrap-aarch64.zip out/bootstrap-aarch64.zip.sha256 --clobber
-
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4

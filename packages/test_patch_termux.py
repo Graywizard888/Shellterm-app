@@ -374,5 +374,102 @@ class Resolve(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
 
 
+class FileBasedPatching(unittest.TestCase):
+    """The streaming path used for the whole repository must give the same result as the in-memory one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def patch_to_file(self, blob: bytes) -> Path:
+        src, dst, work = self.root / "in.deb", self.root / "out.deb", self.root / "work"
+        work.mkdir(exist_ok=True)
+        src.write_bytes(blob)
+        pt.patch_deb_file(src, dst, work)
+        return dst
+
+    def test_same_files_as_the_in_memory_patcher(self):
+        streamed = dict(pt.read_ar(self.patch_to_file(sample_deb()).read_bytes()))
+        in_memory = dict(pt.read_ar(pt.patch_deb(sample_deb())))
+        self.assertEqual(list(streamed), ["debian-binary", "control.tar.xz", "data.tar.xz"])
+        for name in ("control.tar.xz", "data.tar.xz"):
+            self.assertEqual(read_tar(streamed[name]), read_tar(in_memory[name]), name)
+
+    def test_long_names_stay_free_of_pax_headers(self):
+        deb = dict(pt.read_ar(self.patch_to_file(long_name_deb()).read_bytes()))
+        self.assertFalse(tar_record_types(deb["data.tar.xz"]) & {"x", "g"})
+
+    def test_verifier_passes_the_patched_package_and_flags_the_stock_one(self):
+        work = self.root / "check"
+        work.mkdir()
+        self.assertEqual(pt.verify_deb_file("good", self.patch_to_file(sample_deb()), work), [])
+        stock = self.root / "stock.deb"
+        stock.write_bytes(sample_deb())
+        shutil_work = self.root / "check2"
+        shutil_work.mkdir()
+        self.assertTrue(pt.verify_deb_file("stock", stock, shutil_work))
+
+    def test_a_file_that_changes_size_is_an_error(self):
+        from unittest import mock
+        with mock.patch.object(pt, "patch_file", return_value=b"short"):
+            with self.assertRaisesRegex(ValueError, "size changed"):
+                self.patch_to_file(sample_deb())
+
+    def test_old_name_hidden_in_a_jar_is_reported_as_a_warning(self):
+        jar = io.BytesIO()
+        with zipfile.ZipFile(jar, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Config.class", PREFIX_OLD.encode() * 4)
+        data = make_tar([(f"./data/data/{NEW}/files/usr/lib/app.jar", jar.getvalue())])
+        control = make_tar([("./control", b"Package: jarry\nVersion: 1\nArchitecture: all\nDescription: x\n")])
+        deb = self.root / "jarry.deb"
+        deb.write_bytes(pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)]))
+        work = self.root / "check3"
+        work.mkdir()
+        warnings: list[str] = []
+        self.assertEqual(pt.verify_deb_file("jarry", deb, work, warnings), [])
+        self.assertTrue(any("app.jar" in w for w in warnings), warnings)
+
+
+class Shards(unittest.TestCase):
+    def entries(self, sizes):
+        return [pt.Entry(f"p{i}", "1", f"pool/p{i}.deb", "0", size, (), ()) for i, size in enumerate(sizes)]
+
+    def test_shards_cover_every_package_exactly_once(self):
+        plan = self.entries([900, 5, 70, 300, 1, 44, 600, 12, 8, 150])
+        lots = [pt.split_into_shards(plan, f"{k}/4") for k in range(1, 5)]
+        names = [e.name for lot in lots for e in lot]
+        self.assertEqual(sorted(names), sorted(e.name for e in plan))
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_shards_are_about_equal_in_size(self):
+        plan = self.entries([1000, 900, 800, 700, 100, 100, 100, 100, 50, 50])
+        sizes = [sum(e.size for e in pt.split_into_shards(plan, f"{k}/4")) for k in range(1, 5)]
+        self.assertLess(max(sizes) - min(sizes), 300, sizes)
+
+    def test_bad_shard_is_refused(self):
+        with self.assertRaises(SystemExit):
+            pt.split_into_shards(self.entries([1]), "5/4")
+
+
+class FileNames(unittest.TestCase):
+    def test_characters_github_would_rename_are_replaced(self):
+        entry = pt.Entry("libc++", "1:28c~rc+1", "pool/main/libc/libc++/libc++_28c_aarch64.deb", "0", 1, (), ())
+        self.assertEqual(pt.deb_file_name(entry), "libc___28c_rc_1_aarch64.deb")
+
+
+class FlatBootstrapSources(unittest.TestCase):
+    def test_flat_repositories_are_written_with_a_slash_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp, "stock.zip"), Path(tmp, "out.zip")
+            sample_bootstrap(src)
+            pt.patch_bootstrap(src, dst, "", ("https://x.test/apt-1", "https://x.test/apt-2"))
+            with zipfile.ZipFile(dst) as zf:
+                sources = zf.read(pt.SOURCES_LIST).decode()
+        self.assertIn("deb [trusted=yes] https://x.test/apt-1 /\n", sources)
+        self.assertIn("deb [trusted=yes] https://x.test/apt-2 /\n", sources)
+        self.assertNotIn("stable main", sources)
+
+
 if __name__ == "__main__":
     unittest.main()
