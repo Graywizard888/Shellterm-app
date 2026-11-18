@@ -174,6 +174,15 @@ def long_name_deb() -> bytes:
     return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
 
 
+def _pax_tar() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo(LONG_FILE.replace(OLD, NEW))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    return buffer.getvalue()
+
+
 def tar_record_types(xz: bytes) -> set[str]:
     raw = lzma.decompress(xz)
     return {chr(raw[p + 156]) for p in range(0, len(raw) - 512, 512)
@@ -195,6 +204,13 @@ class LongNames(unittest.TestCase):
         data = read_tar(self.members["data.tar.xz"])
         self.assertIn(LONG_FILE.replace(OLD, NEW), data)
         self.assertEqual(data[f"./data/data/{NEW}/files/usr/bin/link"][1], "-> " + LONG_TARGET.replace(OLD, NEW))
+
+    def test_verifier_flags_pax_headers(self):
+        pax_data = lzma.compress(_pax_tar(), format=lzma.FORMAT_XZ)
+        control = dict(pt.read_ar(self.deb))["control.tar.xz"]
+        deb = pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", pax_data)])
+        self.assertEqual(pt.verify_deb("good", self.deb), [])
+        self.assertTrue(any("PAX" in problem for problem in pt.verify_deb("pax", deb)))
 
     def test_dpkg_can_unpack_it(self):
         import shutil

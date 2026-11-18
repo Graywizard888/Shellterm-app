@@ -193,16 +193,36 @@ def write_ar(members: list[tuple[str, bytes]]) -> bytes:
     return bytes(out)
 
 
-def _open_tar(name: str, data: bytes) -> tarfile.TarFile:
+def _decompress_tar(name: str, data: bytes) -> bytes:
     if name.endswith(".xz"):
-        data = lzma.decompress(data)
-    elif name.endswith(".gz"):
-        data = gzip.decompress(data)
-    elif name.endswith(".zst"):
+        return lzma.decompress(data)
+    if name.endswith(".gz"):
+        return gzip.decompress(data)
+    if name.endswith(".zst"):
         raise RuntimeError(f"{name}: zstd packages are not used by Termux, add support if that changes")
-    elif not name.endswith(".tar"):
+    if not name.endswith(".tar"):
         raise RuntimeError(f"{name}: unknown tar compression")
-    return tarfile.open(fileobj=io.BytesIO(data), mode="r:")
+    return data
+
+
+def _open_tar(name: str, data: bytes) -> tarfile.TarFile:
+    return tarfile.open(fileobj=io.BytesIO(_decompress_tar(name, data)), mode="r:")
+
+
+def pax_records(raw: bytes) -> int:
+    """Number of PAX extended header records ('x' or 'g') in an uncompressed tar; dpkg refuses them."""
+    count, pos = 0, 0
+    while pos + 512 <= len(raw):
+        header = raw[pos:pos + 512]
+        if header == b"\0" * 512:
+            pos += 512
+            continue
+        if header[156:157] in (b"x", b"g"):
+            count += 1
+        size_field = header[124:136]
+        size = int(size_field.split(b"\0")[0].strip() or b"0", 8) if size_field[0] < 0x80 else 0
+        pos += 512 + (size + 511) // 512 * 512
+    return count
 
 
 def rewrite_tar(name: str, data: bytes, md5s: dict[str, str] | None = None,
@@ -386,6 +406,9 @@ def verify_deb(name: str, blob: bytes) -> list[str]:
     sums: dict[str, str] = {}
     listed: bytes | None = None
     for tar_name in (data_name, control_name):
+        pax = pax_records(_decompress_tar(tar_name, members[tar_name]))
+        if pax:
+            problems.append(f"{name}: {tar_name} has {pax} PAX extended headers, dpkg cannot unpack them")
         tar = _open_tar(tar_name, members[tar_name])
         for member in tar:
             if OLD.decode() in member.name or OLD.decode() in (member.linkname or ""):
