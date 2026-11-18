@@ -27,8 +27,7 @@
   </a>
 </div>
 
-This repository carries what users download: the signed APKs and the package repository. The app's source code is in
-[Graywizard888/Shellterm](https://github.com/Graywizard888/Shellterm).
+This repository carries what users download: the signed APKs and the package repository.
 
 ---
 
