@@ -211,7 +211,10 @@ def rewrite_tar(name: str, data: bytes, md5s: dict[str, str] | None = None,
     source = _open_tar(name, data)
     sums: dict[str, str] = {}
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:", format=source.format) as out:
+    # GNU format on purpose: tarfile reports PAX for every archive it reads, and PAX writes an extended header ('x')
+    # for names or link targets over 100 bytes (ruby, python, perl...). dpkg rejects those with "unsupported PAX tar
+    # header type 'x'"; GNU long-name records ('L', 'K') are fine for it.
+    with tarfile.open(fileobj=buffer, mode="w:", format=tarfile.GNU_FORMAT) as out:
         for member in source:
             info = tarfile.TarInfo(patch_text(member.name))
             info.mode, info.uid, info.gid = member.mode, member.uid, member.gid
