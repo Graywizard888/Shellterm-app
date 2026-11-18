@@ -106,7 +106,7 @@ Shellterm keeps the Termux way of working and builds its own terminal engine and
 
 ## Install
 
-1. Download `shellterm-release.apk` from the [latest release](https://github.com/Graywizard888/Shellterm-app/releases).
+1. Download `shellterm version.apk` from the [latest release](https://github.com/Graywizard888/Shellterm-app/releases).
 2. Open it and allow installs from your browser or file manager when Android asks.
 3. Start Shellterm and wait for the base system to download and unpack. It needs a connection, about 33 MB for the download.
 4. Let the first-run package upgrade finish, then accept or skip the style setup.
@@ -137,22 +137,6 @@ python3 -m unittest discover -s packages   # the patcher's tests
 ```
 
 One-time setup for a fork: Settings > Pages > Source: GitHub Actions.
-
----
-
-## Build the app
-
-The source is in [Shellterm](https://github.com/Graywizard888/Shellterm). It needs JDK 21, the Android SDK (platform 37,
-build-tools 37.0.0, NDK 30.0.16248370), CMake and Rust with the `aarch64-linux-android` target.
-
-```bash
-./gradlew :app:assembleRelease   # the only app variant
-./gradlew test && (cd native/terminal-core && cargo test --release)
-```
-
-`assembleRelease` runs lint over every module with warnings as errors, then R8 with narrow keep rules. There is no debug
-variant. Release builds are signed with your own key, given through the `SHELLTERM_KEYSTORE_*` variables described in the
-source repository's README.
 
 ---
 
