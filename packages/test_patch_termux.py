@@ -160,6 +160,71 @@ class PatchDeb(unittest.TestCase):
             self.assertEqual(info.stdout.strip(), "tool")
 
 
+LONG_DIR = f"./data/data/{OLD}/files/usr/lib/ruby/gems/4.0.0/gems/" + "very-long-gem-name-" * 5
+LONG_FILE = LONG_DIR + "/lib/some/deeply/nested/file.rb"
+LONG_TARGET = f"{PREFIX_OLD}/lib/ruby/gems/4.0.0/gems/" + "target-" * 20 + "/file.rb"
+
+
+def long_name_deb() -> bytes:
+    data = make_tar([
+        (LONG_FILE, b"puts 1\n"),
+        (f"./data/data/{OLD}/files/usr/bin/link", f"-> {LONG_TARGET}"),
+    ])
+    control = make_tar([("./control", b"Package: longnames\nVersion: 1.0\nArchitecture: aarch64\nDescription: x\n")])
+    return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
+
+
+def _pax_tar() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo(LONG_FILE.replace(OLD, NEW))
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    return buffer.getvalue()
+
+
+def tar_record_types(xz: bytes) -> set[str]:
+    raw = lzma.decompress(xz)
+    return {chr(raw[p + 156]) for p in range(0, len(raw) - 512, 512)
+            if raw[p + 257:p + 262] == b"ustar"}
+
+
+class LongNames(unittest.TestCase):
+    """Names over 100 bytes must not turn into PAX extended headers: dpkg refuses them (seen with ruby)."""
+
+    def setUp(self):
+        self.deb = pt.patch_deb(long_name_deb())
+        self.members = dict(pt.read_ar(self.deb))
+
+    def test_no_pax_headers_are_written(self):
+        types = tar_record_types(self.members["data.tar.xz"])
+        self.assertFalse(types & {"x", "g"}, types)
+
+    def test_long_names_and_targets_survive_and_are_patched(self):
+        data = read_tar(self.members["data.tar.xz"])
+        self.assertIn(LONG_FILE.replace(OLD, NEW), data)
+        self.assertEqual(data[f"./data/data/{NEW}/files/usr/bin/link"][1], "-> " + LONG_TARGET.replace(OLD, NEW))
+
+    def test_verifier_flags_pax_headers(self):
+        pax_data = lzma.compress(_pax_tar(), format=lzma.FORMAT_XZ)
+        control = dict(pt.read_ar(self.deb))["control.tar.xz"]
+        deb = pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", pax_data)])
+        self.assertEqual(pt.verify_deb("good", self.deb), [])
+        self.assertTrue(any("PAX" in problem for problem in pt.verify_deb("pax", deb)))
+
+    def test_dpkg_can_unpack_it(self):
+        import shutil
+        import subprocess
+        if not shutil.which("dpkg-deb"):
+            self.skipTest("dpkg-deb not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            deb = Path(tmp, "long.deb")
+            deb.write_bytes(self.deb)
+            target = Path(tmp, "root")
+            subprocess.run(["dpkg-deb", "-x", str(deb), str(target)], capture_output=True, text=True, check=True)
+            self.assertTrue(Path(target, LONG_FILE.replace(OLD, NEW)).is_file())
+
+
 STATUS = f"""Package: tool
 Status: install ok installed
 Version: 1.0
