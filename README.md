@@ -22,9 +22,6 @@
   <a href="https://github.com/Graywizard888/Shellterm-app/releases">
     <img src="https://img.shields.io/badge/Download-Latest_Release-blue?style=for-the-badge&logo=github" alt="Download the latest release">
   </a>
-  <a href="https://github.com/Graywizard888/Shellterm">
-    <img src="https://img.shields.io/badge/Source-Shellterm-black?style=for-the-badge&logo=github" alt="Source code">
-  </a>
 </div>
 
 This repository carries what users download: the signed APKs and the package repository.
