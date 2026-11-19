@@ -25,9 +25,9 @@ import time
 # Sent last, in this order.
 INDEX_FILES = ["Packages", "Packages.gz", "Packages.xz", "Release"]
 BATCH = 40
-TRIES = 6
-LOW_QUOTA = 25
-PAUSE = 30
+TRIES = 40  # at 60 s a try, and the whole wait until a reset when the quota is gone: lots queue up behind each other for hours
+LOW_QUOTA = 100
+PAUSE = 60
 
 
 def sha256_file(path):
