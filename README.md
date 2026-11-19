@@ -141,6 +141,16 @@ pull request it only checks (each package is downloaded, patched, verified and d
 package is checked for the old name in paths, content and checksums, for PAX tar headers that dpkg refuses, and that
 `dpkg-deb` can read and unpack it. One job runs per lot (11 of them, in parallel).
 
+**Rate limit.** Publishing sends about 4,000 files, one API request each, and the workflow's own token may make only
+about 1,000 requests an hour for the whole repository ("API rate limit exceeded for installation"). So publishing uses
+a personal access token when the repository has the secret `PACKAGES_TOKEN`: on GitHub open *Settings > Developer
+settings > Personal access tokens > Fine-grained tokens*, create one for this repository only with *Contents: Read and
+write* (a classic token needs `public_repo`), then add it under this repository's *Settings > Secrets and variables >
+Actions* as `PACKAGES_TOKEN`. It gets 5,000 requests an hour of its own. Without the secret the workflow falls back
+to its own token. In both cases `packages/publish_release.py` sends only files that changed (compared by SHA-256), so a
+re-run continues where the last one stopped and a weekly run sends little, and it waits for the limit to reset when it
+is reached.
+
 ```bash
 python3 packages/patch_termux.py --help
 python3 -m unittest discover -s packages   # the patcher's tests
