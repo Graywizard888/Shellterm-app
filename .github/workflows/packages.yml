@@ -111,11 +111,9 @@ jobs:
           GH_TOKEN: ${{ secrets.PACKAGES_TOKEN || github.token }}
         run: |
           tag="${{ matrix.tag }}"
-          gh release view "$tag" > /dev/null 2>&1 || \
-            gh release create "$tag" --prerelease --latest=false \
-              --title "Packages ${{ matrix.repo }} ${{ matrix.shard }} of ${{ matrix.shards }}" \
-              --notes "Lot ${{ matrix.shard }} of ${{ matrix.shards }} of the ${{ matrix.repo }} packages of the Shellterm package repository: Termux's packages renamed for com.gwterm, as a flat apt repository. apt reads it with: deb [trusted=yes] https://github.com/$GITHUB_REPOSITORY/releases/download/$tag /  The files are replaced by every run of the Packages workflow; this release is never recreated."
-          python3 packages/publish_release.py "$tag" work/debs
+          python3 packages/publish_release.py "$tag" work/debs \
+            "Packages ${{ matrix.repo }} ${{ matrix.shard }} of ${{ matrix.shards }}" \
+            "Lot ${{ matrix.shard }} of ${{ matrix.shards }} of the ${{ matrix.repo }} packages of the Shellterm package repository: Termux's packages renamed for com.gwterm, as a flat apt repository. apt reads it with: deb [trusted=yes] https://github.com/$GITHUB_REPOSITORY/releases/download/$tag /  The files are replaced by every run of the Packages workflow; this release is never recreated."
           echo "Released: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
 
   bootstrap:

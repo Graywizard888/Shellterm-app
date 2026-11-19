@@ -9,7 +9,10 @@ limit exceeded for installation". Three things make a run fit:
     run that stopped half way continues instead of starting over),
   * when the limit is reached anyway, it sleeps until the limit resets and goes on.
 
-    publish_release.py TAG FOLDER      (needs the gh CLI, GH_TOKEN and GITHUB_REPOSITORY in the environment)
+    publish_release.py TAG FOLDER [TITLE NOTES]   (needs the gh CLI, GH_TOKEN and GITHUB_REPOSITORY in the environment)
+
+With TITLE and NOTES a missing release is created first. Only a real "not found" creates it: a rate-limit error is
+waited out like every other call, so a limited token never tries to create a release that already exists.
 
 Packages.xz and Release go last: apt must never see an index that names files not yet uploaded.
 """
@@ -107,6 +110,16 @@ def quota():
     return int(remaining), int(reset)
 
 
+def ensure_release(repo, tag, title, notes, run=subprocess.run):
+    """Creates the release as a pre-release unless it exists. Raises on any error other than "not found"."""
+    found = run(["gh", "api", f"repos/{repo}/releases/tags/{tag}", "--silent"], capture_output=True, text=True)
+    if found.returncode == 0:
+        return
+    if "HTTP 404" not in (found.stderr or ""):
+        raise subprocess.CalledProcessError(found.returncode, found.args, stderr=found.stderr)
+    gh("release", "create", tag, "--prerelease", "--latest=false", "--title", title, "--notes", notes)
+
+
 def release_assets(repo, tag):
     """name -> sha256 ("" when unknown) of what the release holds now."""
     release_id = gh("api", f"repos/{repo}/releases/tags/{tag}", "--jq", ".id", capture=True).strip()
@@ -121,7 +134,9 @@ def release_assets(repo, tag):
     return existing
 
 
-def publish(tag, folder, repo):
+def publish(tag, folder, repo, title=None, notes=None):
+    if title and notes:
+        retrying(lambda: ensure_release(repo, tag, title, notes), quota)
     local = local_files(folder)
     existing = retrying(lambda: release_assets(repo, tag), quota)
     delete, upload = plan(existing, local)
@@ -137,10 +152,10 @@ def publish(tag, folder, repo):
 
 
 def main(argv):
-    if len(argv) != 3:
+    if len(argv) not in (3, 5):
         print(__doc__)
         return 2
-    publish(argv[1], argv[2], os.environ["GITHUB_REPOSITORY"])
+    publish(argv[1], argv[2], os.environ["GITHUB_REPOSITORY"], *argv[3:])
     return 0
 
 
