@@ -1,0 +1,62 @@
+name: Fonts
+
+# Hosts the fonts of Shellterm's font picker on GitHub Pages, and nothing else: the packages are release assets (see the
+# Packages workflow). Takes the "Nerd Font Mono" Regular file of five families from the Nerd Fonts release, checks that
+# each is monospaced and holds the icons, powerline symbols, box drawing and braille a terminal needs, and publishes
+#   https://graywizard888.github.io/Shellterm-app/fonts/<file>.ttf   and   .../fonts/fonts.json
+# (name, size and SHA-256 of each font, which the app reads). Each deploy replaces the whole site, so the earlier apt
+# repository that Pages held is gone once this has run.
+#
+# Needs Settings > Pages > Source: GitHub Actions. Started by hand with "Run workflow". On a pull request the fonts are
+# downloaded and checked, and nothing is published.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "fonts/**"
+      - ".github/workflows/fonts.yml"
+
+concurrency:
+  group: fonts-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the font checker
+        run: python3 -m pip install fonttools
+
+      - name: Download, check and lay out the fonts
+        run: python3 fonts/build_fonts.py --out site
+
+      - name: Show what will be published
+        run: find site -type f -printf '%s  %p\n' | sort -k2
+
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
