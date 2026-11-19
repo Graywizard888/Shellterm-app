@@ -76,6 +76,20 @@ def patch_text(text: str) -> str:
     return text.replace(OLD.decode(), NEW.decode())
 
 
+# Termux's install scripts start some programs as `LD_PRELOAD='' prog` (python's `py3compile`, `py3clean`...): its own
+# exec library gets in their way. Shellterm's exec hook is what lets such a program start other programs at all (Android
+# 10+ refuses to execute files in the app's data directory), so with the preload cleared py3compile fails with
+# "PermissionError: ... /usr/bin/bash" when it starts bash. The name is changed to one of the same length (NO_PRELOAD,
+# a variable nobody reads), so the script keeps its size and the program keeps the hook.
+MAINTAINER_SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "config"}
+_PRELOAD_CLEARED = re.compile(rb"\bLD_PRELOAD=(?=(?:''|\"\"|[ \t;]|$))|(?<=unset )LD_PRELOAD\b", re.MULTILINE)
+
+
+def keep_preload(script: bytes) -> bytes:
+    """The script with every `LD_PRELOAD=''` (empty assignment) or `unset LD_PRELOAD` turned into a harmless twin."""
+    return _PRELOAD_CLEARED.sub(lambda m: b"NO_PRELOAD=" if m.group(0).endswith(b"=") else b"NO_PRELOAD", script)
+
+
 def md5_hex(data: bytes) -> str:
     return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
@@ -301,8 +315,10 @@ def pax_records(raw: bytes) -> int:
 
 
 def rewrite_tar_stream(source: tarfile.TarFile, target, md5s: dict[str, str] | None = None,
-                       collect_md5s: bool = False, overrides: dict[str, bytes] | None = None) -> dict[str, str]:
+                       collect_md5s: bool = False, overrides: dict[str, bytes] | None = None,
+                       scripts: bool = False) -> dict[str, str]:
     """Patches every member's name, link target and content while copying `source` into the open file `target`.
+    With `scripts` (the control tar) the maintainer scripts also keep the exec hook, see [keep_preload].
 
     Returns (path -> md5) of the patched files. `source` may be opened in streaming mode ("r|xz"), so a package with
     gigabytes of files never has to be held in memory, only one file at a time."""
@@ -321,6 +337,8 @@ def rewrite_tar_stream(source: tarfile.TarFile, target, md5s: dict[str, str] | N
             elif member.isfile():
                 original = source.extractfile(member).read()
                 content = patch_file(member.name, original)
+                if scripts and member.name.removeprefix("./") in MAINTAINER_SCRIPTS:
+                    content = keep_preload(content)
                 replaced = overrides.get(info.name.removeprefix("./")) if overrides else None
                 if replaced is not None:
                     content = replaced  # a file whose whole content is ours (the sources list of a repository switch)
@@ -341,11 +359,11 @@ def rewrite_tar_stream(source: tarfile.TarFile, target, md5s: dict[str, str] | N
 
 
 def rewrite_tar(name: str, data: bytes, md5s: dict[str, str] | None = None,
-                collect_md5s: bool = False) -> tuple[bytes, dict[str, str]]:
+                collect_md5s: bool = False, scripts: bool = False) -> tuple[bytes, dict[str, str]]:
     """Patches every member's name, link target and content. Returns the new .tar.xz and (path -> md5) of its files."""
     source = _open_tar(name, data)
     buffer = io.BytesIO()
-    sums = rewrite_tar_stream(source, buffer, md5s, collect_md5s)
+    sums = rewrite_tar_stream(source, buffer, md5s, collect_md5s, scripts=scripts)
     return lzma.compress(buffer.getvalue(), format=lzma.FORMAT_XZ, preset=6), sums
 
 
@@ -371,7 +389,7 @@ def patch_deb(blob: bytes) -> bytes:
         if name == data_name:
             out.append(("data.tar.xz", new_data))
         elif name.startswith("control.tar"):
-            new_control, _ = rewrite_tar(name, payload, md5s=sums)
+            new_control, _ = rewrite_tar(name, payload, md5s=sums, scripts=True)
             out.append(("control.tar.xz", new_control))
         else:
             out.append((name, payload))
@@ -468,7 +486,7 @@ def patch_deb_file(src: Path, dst: Path, work: Path, overrides: dict[str, bytes]
         if name.startswith("control.tar"):
             raw = work / "control.patched.tar"
             with _open_tar_file(name, path) as source, raw.open("wb") as target:
-                rewrite_tar_stream(source, target, md5s=sums)
+                rewrite_tar_stream(source, target, md5s=sums, scripts=True)
             packed = work / "control.patched.tar.xz"
             compress_xz(raw, packed)
             raw.unlink()
