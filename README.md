@@ -133,9 +133,12 @@ not hosted.
 | What | Where |
 |---|---|
 | **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, apt pointed at the four main releases; used when Termux's own download fails |
-| **Older apps** | Versions up to 1.0.2 read the earlier repository on GitHub Pages (`https://graywizard888.github.io/Shellterm-app/apt`). It is no longer rebuilt and stays as it was |
+| **Fonts** | GitHub Pages, `https://graywizard888.github.io/Shellterm-app/fonts/`: 47 Nerd Fonts (Mono Regular) for the app's font picker, with `fonts.json` (name, size, SHA-256) and each license. Built by the **Fonts** workflow (see below). Pages hosts nothing else |
+| **Older apps** | Versions up to 1.0.2 read an earlier apt repository on GitHub Pages (`.../Shellterm-app/apt`). That site was replaced by the fonts, so those versions can no longer install packages and need an update |
 
-Everything is built by the **Packages** workflow (Actions tab). Started by hand, or by itself every Monday at 03:23 UTC
+The fonts are built by the **Fonts** workflow (`fonts/build_fonts.py`): started by hand, it reads the Nerd Fonts v3.5.1 release zips with HTTP range requests (only the one Regular file of each family, not the whole zip), checks that every font is monospaced and holds the icons, powerline symbols, box drawing and braille a terminal needs, and deploys them to Pages. A family that fails a check, or has no license file, is skipped and listed in the log. Needs Settings, Pages, Source: GitHub Actions.
+
+The packages are built by the **Packages** workflow (Actions tab). Started by hand, or by itself every Monday at 03:23 UTC
 to pick up Termux's updates, it patches, checks and publishes; on a
 pull request it only checks (each package is downloaded, patched, verified and deleted again, nothing is stored). Each
 package is checked for the old name in paths, content and checksums, for PAX tar headers that dpkg refuses, and that
