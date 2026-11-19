@@ -4,6 +4,7 @@ import hashlib
 import io
 import lzma
 import re
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 import patch_termux as pt
+import publish_release as pr
 
 OLD = "com.termux"
 NEW = "com.gwterm"
@@ -555,6 +557,65 @@ class PackageUrls(unittest.TestCase):
 
     def test_other_characters_are_escaped(self):
         self.assertEqual(pt.package_url_path("pool/main/a b+c.deb"), "pool/main/a%20b%2Bc.deb")
+
+
+class PublishRelease(unittest.TestCase):
+    def test_plan_sends_only_what_changed_and_the_index_last(self):
+        existing = {"a.deb": "1", "b.deb": "2", "gone.deb": "3", "Packages": "old", "Release": "same"}
+        local = {"a.deb": "1", "b.deb": "changed", "new.deb": "4", "Packages": "new", "Release": "same", "Packages.gz": "z"}
+        delete, upload = pr.plan(existing, local)
+        self.assertEqual(delete, ["gone.deb"])
+        self.assertEqual(upload, ["b.deb", "new.deb", "Packages", "Packages.gz"])
+
+    def test_an_unknown_digest_counts_as_different(self):
+        self.assertEqual(pr.plan({"a.deb": ""}, {"a.deb": "1"}), ([], ["a.deb"]))
+
+    def test_a_finished_release_has_nothing_to_do(self):
+        files = {"a.deb": "1", "Packages": "p", "Release": "r"}
+        self.assertEqual(pr.plan(dict(files), files), ([], []))
+
+    def test_batches_keep_the_index_files_alone_and_last(self):
+        names = [f"{i}.deb" for i in range(5)] + ["Packages", "Packages.xz", "Release"]
+        self.assertEqual(
+            list(pr.batches(names, size=2)),
+            [["0.deb", "1.deb"], ["2.deb", "3.deb"], ["4.deb"], ["Packages", "Packages.xz", "Release"]],
+        )
+        self.assertEqual(list(pr.batches([])), [])
+
+    def test_waiting_until_the_quota_resets(self):
+        self.assertEqual(pr.seconds_to_wait(0, 1000, 900), 115)
+        self.assertEqual(pr.seconds_to_wait(0, 1000, 2000), 15)
+        self.assertEqual(pr.seconds_to_wait(4000, 1000, 900), pr.PAUSE)
+
+    def test_a_failed_request_is_retried_after_waiting(self):
+        calls, slept = [], []
+
+        def action():
+            calls.append(1)
+            if len(calls) < 3:
+                raise subprocess.CalledProcessError(1, "gh")
+            return "ok"
+
+        self.assertEqual(pr.retrying(action, lambda: (0, 1500), sleep=slept.append, now=lambda: 1000), "ok")
+        self.assertEqual(slept, [515, 515])
+
+    def test_it_gives_up_after_the_last_try(self):
+        def action():
+            raise subprocess.CalledProcessError(1, "gh")
+
+        slept = []
+        with self.assertRaises(subprocess.CalledProcessError):
+            pr.retrying(action, lambda: (900, 0), sleep=slept.append, tries=3)
+        self.assertEqual(len(slept), 2)
+
+    def test_local_files_are_hashed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.deb").write_bytes(b"abc")
+            (Path(tmp) / "sub").mkdir()
+            self.assertEqual(
+                pr.local_files(tmp),
+                {"a.deb": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+            )
 
 
 if __name__ == "__main__":
