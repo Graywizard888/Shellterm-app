@@ -545,5 +545,18 @@ class RepositorySwitches(unittest.TestCase):
             self.assertEqual(pt.verify_deb_file("x11-repo", dst, work), [])
 
 
+
+
+class PackageUrls(unittest.TestCase):
+    def test_epoch_colon_is_not_escaped(self):
+        self.assertEqual(
+            pt.package_url_path("pool/tur/openssl_1:3.5.2_aarch64.deb"),
+            "pool/tur/openssl_1:3.5.2_aarch64.deb",
+        )
+
+    def test_other_characters_are_escaped(self):
+        self.assertEqual(pt.package_url_path("pool/main/a b+c.deb"), "pool/main/a%20b%2Bc.deb")
+
+
 if __name__ == "__main__":
     unittest.main()

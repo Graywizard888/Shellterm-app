@@ -97,6 +97,12 @@ def fetch(url: str, attempts: int = 6) -> bytes:
     raise AssertionError("unreachable")
 
 
+def package_url_path(filename: str) -> str:
+    """The Filename of an index entry as a URL path. A colon (the epoch, 1:2.0) stays as it is: the TUR server
+    redirects it to the release asset, where GitHub has turned it into a dot, but not the %3A form."""
+    return urllib.parse.quote(filename, safe="/:")
+
+
 def fetch_file(url: str, target: Path, sha256: str, attempts: int = 6) -> None:
     """Downloads to a file (not into memory) and checks the SHA-256 from the repository index."""
     for attempt in range(1, attempts + 1):
@@ -534,7 +540,7 @@ def process_package(entry: Entry, base: str, overrides: dict[str, bytes], out: P
                     "problems": [], "warnings": []}
     try:
         stock = work / "stock.deb"
-        fetch_file(f"{base}/{urllib.parse.quote(entry.filename)}", stock, entry.sha256)
+        fetch_file(f"{base}/{package_url_path(entry.filename)}", stock, entry.sha256)
         parts = work / "parts"
         parts.mkdir()
         patched = out / deb_file_name(entry)
@@ -609,7 +615,7 @@ def cmd_repo(args: argparse.Namespace) -> None:
 
     if not args.all:
         def work(entry: Entry) -> str:
-            blob = fetch(f"{source.base}/{urllib.parse.quote(entry.filename)}")
+            blob = fetch(f"{source.base}/{package_url_path(entry.filename)}")
             if hashlib.sha256(blob).hexdigest() != entry.sha256:
                 raise RuntimeError(f"Checksum mismatch for {entry.name}")
             (out / deb_file_name(entry)).write_bytes(patch_deb(blob))
