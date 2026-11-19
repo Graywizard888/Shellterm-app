@@ -3,6 +3,7 @@ import gzip
 import hashlib
 import io
 import lzma
+import re
 import tarfile
 import tempfile
 import unittest
@@ -478,6 +479,70 @@ class FlatBootstrapSources(unittest.TestCase):
         self.assertIn("deb [trusted=yes] https://x.test/apt-1 /\n", sources)
         self.assertIn("deb [trusted=yes] https://x.test/apt-2 /\n", sources)
         self.assertNotIn("stable main", sources)
+
+
+class RepositoryTable(unittest.TestCase):
+    def test_every_lot_has_a_release_name(self):
+        tags = [pt.release_tag(repo, lot) for repo, source in pt.SOURCE_REPOS.items()
+                for lot in range(1, source.lots + 1)]
+        self.assertEqual(len(tags), len(set(tags)))
+        self.assertIn("apt-1", tags)
+        self.assertIn("apt-x11-2", tags)
+        self.assertIn("apt-tur-4", tags)
+        self.assertNotIn("apt-main-1", tags)  # main keeps the plain names
+
+    def test_workflow_matrix_matches_the_table(self):
+        workflow = Path(__file__).parent.parent.joinpath(".github/workflows/packages.yml").read_text()
+        in_workflow = sorted(re.findall(r"tag: (apt-[\w-]+)", workflow))
+        in_table = sorted(pt.release_tag(repo, lot) for repo, source in pt.SOURCE_REPOS.items()
+                          for lot in range(1, source.lots + 1))
+        self.assertEqual(in_workflow, in_table)
+
+    def test_several_versions_of_a_package_are_all_kept(self):
+        text = ("Package: a\nVersion: 1\nFilename: p/a1.deb\nSHA256: 0\nSize: 1\n\n"
+                "Package: a\nVersion: 2\nFilename: p/a2.deb\nSHA256: 0\nSize: 1\n")
+        self.assertEqual([e.version for e in pt.parse_index_entries(text)], ["1", "2"])
+        self.assertEqual(pt.parse_index(text)["a"].version, "2")
+
+
+class RepositorySwitches(unittest.TestCase):
+    def switch_deb(self) -> bytes:
+        data = make_tar([
+            (f"./data/data/{OLD}/files/usr/etc/apt/sources.list.d/x11.list",
+             b"deb https://packages-cf.termux.dev/apt/termux-x11/ x11 main\n"),
+            (f"./data/data/{OLD}/files/usr/bin/tool", ELF_LIKE),
+        ])
+        control = make_tar([("./control", b"Package: x11-repo\nVersion: 8.4-1\nArchitecture: all\nDescription: x\n"),
+                            ("./md5sums", b"")])
+        return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
+
+    def test_only_the_three_switch_packages_get_overrides(self):
+        self.assertTrue(pt.source_overrides("x11-repo", "https://r.test"))
+        self.assertTrue(pt.source_overrides("root-repo", "https://r.test"))
+        self.assertTrue(pt.source_overrides("tur-repo", "https://r.test"))
+        self.assertEqual(pt.source_overrides("git", "https://r.test"), {})
+
+    def test_tur_list_names_every_lot(self):
+        (content,) = pt.source_overrides("tur-repo", "https://r.test").values()
+        lines = [l for l in content.decode().splitlines() if l.startswith("deb ")]
+        self.assertEqual(lines, [f"deb [trusted=yes] https://r.test/apt-tur-{n} /" for n in range(1, 5)])
+
+    def test_sources_list_points_at_our_releases_and_checksums_follow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "work").mkdir()
+            src, dst = root / "in.deb", root / "out.deb"
+            src.write_bytes(self.switch_deb())
+            pt.patch_deb_file(src, dst, root / "work", pt.source_overrides("x11-repo", "https://r.test"))
+            members = dict(pt.read_ar(dst.read_bytes()))
+            data = read_tar(members["data.tar.xz"])
+            listed = data[f"./data/data/{NEW}/files/usr/etc/apt/sources.list.d/x11.list"][1].decode()
+            self.assertIn("deb [trusted=yes] https://r.test/apt-x11-1 /", listed)
+            self.assertIn("deb [trusted=yes] https://r.test/apt-x11-2 /", listed)
+            self.assertNotIn("termux.dev", listed)
+            work = root / "check"
+            work.mkdir()
+            self.assertEqual(pt.verify_deb_file("x11-repo", dst, work), [])
 
 
 if __name__ == "__main__":

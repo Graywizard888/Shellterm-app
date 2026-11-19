@@ -1,14 +1,19 @@
 name: Packages
 
-# Takes every package of Termux's main repository (3,000+, about 9.5 GB) and renames the app inside them
-# (com.termux -> com.gwterm; same length, so the binaries stay valid). Nothing is compiled.
+# Takes the packages of Termux's repositories and renames the app inside them (com.termux -> com.gwterm; same length,
+# so the binaries stay valid). Nothing is compiled.
+#   main   3,000+ packages, 9.5 GB: what pkg uses by default      -> releases apt-1 .. apt-4
+#   x11    graphical programs, 5.5 GB (pkg install x11-repo)       -> releases apt-x11-1, apt-x11-2
+#   root   programs for rooted phones, 0.2 GB (pkg install root-repo) -> release apt-root-1
+#   tur    the community repository, 11 GB (pkg install tur-repo)  -> releases apt-tur-1 .. apt-tur-4
+# Each lot is its own job (a release holds at most 1,000 files, a runner about 14 GB of disk). The x11, root and tur
+# repositories are opt-in, as in Termux: the packages that switch them on are rewritten to point at these releases.
 #
 # Where things go (when the workflow is started by hand with "Run workflow", and every Monday at 03:23 UTC):
-#   releases apt-1 .. apt-4   the patched .deb files, split into four lots of about equal size, each with a flat apt
-#                             index (Packages, Packages.gz, Packages.xz, Release). A release holds at most 1,000 files,
-#                             so one release cannot take them all.
-#   release bootstrap         Termux's bootstrap zip patched for this app, with apt pointed at the four releases
-#                             (the app's fallback when Termux's own download fails).
+#   the releases above     the patched .deb files, each lot with a flat apt index (Packages, Packages.gz,
+#                          Packages.xz, Release). Created once, afterwards only their files are replaced.
+#   release bootstrap      Termux's bootstrap zip patched for this app, with apt pointed at apt-1 .. apt-4
+#                          (the app's fallback when Termux's own download fails).
 #
 # On a pull request the same work is done as a check: every package is downloaded, patched, verified and deleted
 # again, and nothing is published. Packages are checked for the old name in paths, content and checksums, PAX tar
@@ -29,18 +34,27 @@ concurrency:
 permissions:
   contents: write
 
-env:
-  SHARDS: 4
-
 jobs:
   shard:
-    name: Packages ${{ matrix.shard }} of 4
+    name: ${{ matrix.repo }} ${{ matrix.shard }} of ${{ matrix.shards }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # Keep in step with SOURCE_REPOS in packages/patch_termux.py (a unit test compares the release names).
+        include:
+          - {repo: main, shard: 1, shards: 4, tag: apt-1}
+          - {repo: main, shard: 2, shards: 4, tag: apt-2}
+          - {repo: main, shard: 3, shards: 4, tag: apt-3}
+          - {repo: main, shard: 4, shards: 4, tag: apt-4}
+          - {repo: x11, shard: 1, shards: 2, tag: apt-x11-1}
+          - {repo: x11, shard: 2, shards: 2, tag: apt-x11-2}
+          - {repo: root, shard: 1, shards: 1, tag: apt-root-1}
+          - {repo: tur, shard: 1, shards: 4, tag: apt-tur-1}
+          - {repo: tur, shard: 2, shards: 4, tag: apt-tur-2}
+          - {repo: tur, shard: 3, shards: 4, tag: apt-tur-3}
+          - {repo: tur, shard: 4, shards: 4, tag: apt-tur-4}
     steps:
       - uses: actions/checkout@v7
 
@@ -58,7 +72,9 @@ jobs:
         run: |
           flags=(--check)
           [ "$PUBLISH" = true ] || flags+=(--discard)
-          python3 packages/patch_termux.py repo --all --shard "${{ matrix.shard }}/$SHARDS" \
+          python3 packages/patch_termux.py repo --all --repo-name "${{ matrix.repo }}" \
+            --shard "${{ matrix.shard }}/${{ matrix.shards }}" \
+            --release-base "https://github.com/$GITHUB_REPOSITORY/releases/download" \
             --jobs "$(nproc)" "${flags[@]}" \
             --out work/debs --scratch "$RUNNER_TEMP/scratch" --report work/report.jsonl
 
@@ -71,7 +87,7 @@ jobs:
           rows = [json.loads(line) for line in open("work/report.jsonl")]
           bad = [r for r in rows if r["problems"]]
           warn = [r for r in rows if r["warnings"]]
-          print(f"### Lot ${{ matrix.shard }} of ${{ env.SHARDS }}")
+          print(f"### ${{ matrix.repo }}, lot ${{ matrix.shard }} of ${{ matrix.shards }}")
           print(f"- {len(rows)} packages, {sum(r['size'] for r in rows) / 1e6:.0f} MB downloaded, "
                 f"{sum(r.get('patched_size', 0) for r in rows) / 1e6:.0f} MB patched")
           print(f"- {len(bad)} with problems, {len(warn)} with warnings")
@@ -89,15 +105,16 @@ jobs:
 
       # The release is rebuilt from scratch each run: files of packages that are gone from Termux are removed,
       # everything else is replaced. Up to 1,000 files fit in one release; a lot has about 760.
-      - name: Publish release apt-${{ matrix.shard }}
+      - name: Publish release ${{ matrix.tag }}
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="apt-${{ matrix.shard }}"
+          tag="${{ matrix.tag }}"
           gh release view "$tag" > /dev/null 2>&1 || \
-            gh release create "$tag" --prerelease --latest=false --title "Packages ${{ matrix.shard }} of $SHARDS" \
-              --notes "Lot ${{ matrix.shard }} of $SHARDS of the Shellterm package repository: Termux's packages renamed for com.gwterm, as a flat apt repository. apt reads it with: deb [trusted=yes] https://github.com/$GITHUB_REPOSITORY/releases/download/$tag /  Built by the Packages workflow."
+            gh release create "$tag" --prerelease --latest=false \
+              --title "Packages ${{ matrix.repo }} ${{ matrix.shard }} of ${{ matrix.shards }}" \
+              --notes "Lot ${{ matrix.shard }} of ${{ matrix.shards }} of the ${{ matrix.repo }} packages of the Shellterm package repository: Termux's packages renamed for com.gwterm, as a flat apt repository. apt reads it with: deb [trusted=yes] https://github.com/$GITHUB_REPOSITORY/releases/download/$tag /  The files are replaced by every run of the Packages workflow; this release is never recreated."
           gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
             [ -e "work/debs/$asset" ] || gh release delete-asset "$tag" "$asset" --yes
           done
@@ -124,7 +141,7 @@ jobs:
       - name: Patch the bootstrap
         run: |
           args=()
-          for k in $(seq 1 "$SHARDS"); do
+          for k in 1 2 3 4; do
             args+=(--flat-repo "https://github.com/$GITHUB_REPOSITORY/releases/download/apt-$k")
           done
           python3 packages/patch_termux.py bootstrap --stock work/stock-bootstrap.zip \

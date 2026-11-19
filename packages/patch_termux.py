@@ -44,6 +44,8 @@ NEW = b"com.gwterm"
 assert len(OLD) == len(NEW), "the swap only works if both names have the same length"
 
 TERMUX_REPO = "https://packages-cf.termux.dev/apt/termux-main"
+# Where our patched packages are published (the releases apt-1 .. apt-4 and so on); forks pass --release-base.
+RELEASE_BASE = "https://github.com/Graywizard888/Shellterm-app/releases/download"
 BOOTSTRAP_URL = "https://github.com/termux/termux-packages/releases/latest/download/bootstrap-aarch64.zip"
 ARCH = "aarch64"
 SYMLINKS = "SYMLINKS.txt"
@@ -118,6 +120,45 @@ def fetch_file(url: str, target: Path, sha256: str, attempts: int = 6) -> None:
 # Package index
 
 @dataclass(frozen=True)
+class SourceRepo:
+    """One of Termux's package repositories: where its stock packages come from and into how many releases the
+    patched ones are split (a release holds at most 1,000 files, and a runner about 14 GB of disk)."""
+    base: str
+    index: str
+    lots: int
+
+
+SOURCE_REPOS = {
+    "main": SourceRepo(TERMUX_REPO, "dists/stable/main/binary-aarch64/Packages", 4),
+    # The three below are opt-in in Termux (pkg install x11-repo / root-repo / tur-repo); here too.
+    "x11": SourceRepo("https://packages-cf.termux.dev/apt/termux-x11", "dists/x11/main/binary-aarch64/Packages", 2),
+    "root": SourceRepo("https://packages-cf.termux.dev/apt/termux-root", "dists/root/stable/binary-aarch64/Packages", 1),
+    # The community repository, a separate project from Termux itself.
+    "tur": SourceRepo("https://tur.kcubeterm.com", "dists/tur-packages/tur/binary-aarch64/Packages", 4),
+}
+
+# The packages that switch a repository on: what they install under etc/apt/sources.list.d points at Termux's servers,
+# which serve packages built for com.termux, so it is rewritten to point at our releases.
+REPO_SWITCHES = {"x11-repo": ("x11", "x11.list"), "root-repo": ("root", "root.list"), "tur-repo": ("tur", "tur.list")}
+
+
+def release_tag(repo: str, lot: int) -> str:
+    """Release holding lot `lot` (1-based) of a repository: apt-1 .. apt-4 for main, apt-x11-1 and so on."""
+    return f"apt-{lot}" if repo == "main" else f"apt-{repo}-{lot}"
+
+
+def source_overrides(package: str, release_base: str) -> dict[str, bytes]:
+    """Files to replace in a repository-switch package, keyed by path inside the package (without leading ./)."""
+    if package not in REPO_SWITCHES:
+        return {}
+    repo, list_name = REPO_SWITCHES[package]
+    lines = [f"# Shellterm's copy of the {repo} repository (release assets of the app's package repository)"]
+    lines += [f"deb [trusted=yes] {release_base}/{release_tag(repo, lot)} /"
+              for lot in range(1, SOURCE_REPOS[repo].lots + 1)]
+    return {f"{DATA_ROOT}etc/apt/sources.list.d/{list_name}": ("\n".join(lines) + "\n").encode()}
+
+
+@dataclass(frozen=True)
 class Entry:
     name: str
     version: str
@@ -129,7 +170,12 @@ class Entry:
 
 
 def parse_index(text: str) -> dict[str, Entry]:
-    entries: dict[str, Entry] = {}
+    return {entry.name: entry for entry in parse_index_entries(text)}
+
+
+def parse_index_entries(text: str) -> list[Entry]:
+    """Every package block of a Packages index, several versions of one package included."""
+    entries: list[Entry] = []
     for block in text.strip().split("\n\n"):
         fields: dict[str, str] = {}
         key = None
@@ -145,7 +191,7 @@ def parse_index(text: str) -> dict[str, Entry]:
         for field in ("Pre-Depends", "Depends"):
             deps += [d for d in fields.get(field, "").split(",") if d.strip()]
         provides = tuple(re.sub(r"\(.*?\)", "", p).strip() for p in fields.get("Provides", "").split(",") if p.strip())
-        entries[fields["Package"]] = Entry(
+        entries.append(Entry(
             name=fields["Package"],
             version=fields["Version"],
             filename=fields["Filename"],
@@ -153,7 +199,7 @@ def parse_index(text: str) -> dict[str, Entry]:
             size=int(fields["Size"]),
             depends=tuple(deps),
             provides=provides,
-        )
+        ))
     return entries
 
 
@@ -252,7 +298,7 @@ def pax_records(raw: bytes) -> int:
 
 
 def rewrite_tar_stream(source: tarfile.TarFile, target, md5s: dict[str, str] | None = None,
-                       collect_md5s: bool = False) -> dict[str, str]:
+                       collect_md5s: bool = False, overrides: dict[str, bytes] | None = None) -> dict[str, str]:
     """Patches every member's name, link target and content while copying `source` into the open file `target`.
 
     Returns (path -> md5) of the patched files. `source` may be opened in streaming mode ("r|xz"), so a package with
@@ -272,8 +318,11 @@ def rewrite_tar_stream(source: tarfile.TarFile, target, md5s: dict[str, str] | N
             elif member.isfile():
                 original = source.extractfile(member).read()
                 content = patch_file(member.name, original)
+                replaced = overrides.get(info.name.removeprefix("./")) if overrides else None
+                if replaced is not None:
+                    content = replaced  # a file whose whole content is ours (the sources list of a repository switch)
                 # The rename keeps every length, so a file only changes size when its gzip was repacked (man pages).
-                if len(content) != len(original) and not member.name.endswith(".gz"):
+                elif len(content) != len(original) and not member.name.endswith(".gz"):
                     raise ValueError(f"{member.name}: size changed from {len(original)} to {len(content)} bytes")
                 info.size = len(content)
                 if collect_md5s:
@@ -301,10 +350,12 @@ def rewrite_md5sums(content: bytes, new_sums: dict[str, str]) -> bytes:
     """Package checksum list: same file paths (renamed), new content hashes."""
     lines = []
     for line in content.decode().splitlines():
+        if not line.strip():
+            continue
         digest, _, path = line.partition("  ")
         path = patch_text(path)
         lines.append(f"{new_sums.get(path, digest)}  {path}")
-    return ("\n".join(lines) + "\n").encode()
+    return ("\n".join(lines) + "\n").encode() if lines else b""
 
 
 def patch_deb(blob: bytes) -> bytes:
@@ -392,7 +443,7 @@ def compress_xz(source: Path, target: Path) -> None:
         shutil.copyfileobj(fp, out, 1 << 20)
 
 
-def patch_deb_file(src: Path, dst: Path, work: Path) -> None:
+def patch_deb_file(src: Path, dst: Path, work: Path, overrides: dict[str, bytes] | None = None) -> None:
     members = read_ar_to_dir(src, work)
     data_name = next(n for n, _ in members if n.startswith("data.tar"))
     out: list[tuple[str, Path]] = []
@@ -402,7 +453,7 @@ def patch_deb_file(src: Path, dst: Path, work: Path) -> None:
         if name == data_name:
             raw = work / "data.patched.tar"
             with _open_tar_file(name, path) as source, raw.open("wb") as target:
-                sums = rewrite_tar_stream(source, target, collect_md5s=True)
+                sums = rewrite_tar_stream(source, target, collect_md5s=True, overrides=overrides)
             packed = work / "data.patched.tar.xz"
             compress_xz(raw, packed)
             raw.unlink()
@@ -474,7 +525,8 @@ def dpkg_check(deb: Path, entry: Entry, work: Path) -> list[str]:
     return problems
 
 
-def process_package(entry: Entry, out: Path, scratch: Path, check: bool, discard: bool) -> dict:
+def process_package(entry: Entry, base: str, overrides: dict[str, bytes], out: Path, scratch: Path, check: bool,
+                    discard: bool) -> dict:
     """Downloads one package, patches it, and (with check) verifies it. Returns a small report."""
     started = time.time()
     work = Path(tempfile.mkdtemp(prefix=entry.name + ".", dir=scratch))
@@ -482,11 +534,11 @@ def process_package(entry: Entry, out: Path, scratch: Path, check: bool, discard
                     "problems": [], "warnings": []}
     try:
         stock = work / "stock.deb"
-        fetch_file(f"{TERMUX_REPO}/{urllib.parse.quote(entry.filename)}", stock, entry.sha256)
+        fetch_file(f"{base}/{urllib.parse.quote(entry.filename)}", stock, entry.sha256)
         parts = work / "parts"
         parts.mkdir()
         patched = out / deb_file_name(entry)
-        patch_deb_file(stock, patched, parts)
+        patch_deb_file(stock, patched, parts, overrides)
         stock.unlink()
         shutil.rmtree(parts, ignore_errors=True)
         report["patched_size"] = patched.stat().st_size
@@ -506,9 +558,13 @@ def process_package(entry: Entry, out: Path, scratch: Path, check: bool, discard
 
 
 def cmd_repo(args: argparse.Namespace) -> None:
-    index = parse_index(fetch(f"{TERMUX_REPO}/dists/stable/main/binary-{ARCH}/Packages").decode())
+    source = SOURCE_REPOS[args.repo_name]
+    if not args.all and args.repo_name != "main":
+        sys.exit("--repo-name other than main needs --all")
+    entries = parse_index_entries(fetch(f"{source.base}/{source.index}").decode())
+    index = {entry.name: entry for entry in entries}
     if args.all:
-        plan = sorted(index.values(), key=lambda e: e.name)
+        plan = sorted(entries, key=lambda e: (e.name, e.version))
         if args.only:
             wanted_names = set(args.only.split(","))
             plan = [e for e in plan if e.name in wanted_names]
@@ -533,20 +589,19 @@ def cmd_repo(args: argparse.Namespace) -> None:
     if args.all and args.resume and args.report and Path(args.report).exists():
         # Carry on after an interrupted run: packages the report lists without problems (and whose file is there) are
         # kept and skipped; anything else in the folder, such as a half-written file, is removed.
-        file_of = {e.name: deb_file_name(e) for e in plan}
+        file_names = {deb_file_name(e) for e in plan}
         for line in Path(args.report).read_text().splitlines():
             try:
                 record = json.loads(line)
             except ValueError:
                 continue  # a half-written last line
-            name = record.get("name")
-            if name in file_of and not record["problems"] and (out / file_of[name]).is_file():
-                done_before.add(name)
-        keep = {file_of[name] for name in done_before}
+            file_name = record.get("file")
+            if file_name in file_names and not record["problems"] and (out / file_name).is_file():
+                done_before.add(file_name)
         for stray in out.glob("*"):
-            if stray.name not in keep:
+            if stray.name not in done_before:
                 stray.unlink()
-        plan = [e for e in plan if e.name not in done_before]
+        plan = [e for e in plan if deb_file_name(e) not in done_before]
         print(f"Resuming: {len(done_before)} packages already done, {len(plan)} to go")
     else:
         shutil.rmtree(out, ignore_errors=True)
@@ -554,7 +609,7 @@ def cmd_repo(args: argparse.Namespace) -> None:
 
     if not args.all:
         def work(entry: Entry) -> str:
-            blob = fetch(f"{TERMUX_REPO}/{urllib.parse.quote(entry.filename)}")
+            blob = fetch(f"{source.base}/{urllib.parse.quote(entry.filename)}")
             if hashlib.sha256(blob).hexdigest() != entry.sha256:
                 raise RuntimeError(f"Checksum mismatch for {entry.name}")
             (out / deb_file_name(entry)).write_bytes(patch_deb(blob))
@@ -575,7 +630,9 @@ def cmd_repo(args: argparse.Namespace) -> None:
     started = time.time()
     report_file = open(args.report, "a" if done_before else "w") if args.report else None
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(process_package, e, out, scratch, args.check, args.discard)
+        futures = [pool.submit(process_package, e, source.base,
+                               source_overrides(e.name, args.release_base) if args.repo_name == "main" else {},
+                               out, scratch, args.check, args.discard)
                    for e in sorted(plan, key=lambda e: -e.size)]
         for done, future in enumerate(concurrent.futures.as_completed(futures), 1):
             report = future.result()
@@ -768,6 +825,8 @@ def verify_deb_file(name: str, path: Path, work: Path, warnings: list[str] | Non
                     listed = content
     if listed:
         for line in listed.decode().splitlines():
+            if not line.strip():
+                continue
             digest, _, listed_path = line.partition("  ")
             if sums.get(listed_path) != digest:
                 problems.append(f"{name}: checksum of {listed_path} does not match")
@@ -828,6 +887,10 @@ def main(argv: list[str]) -> None:
     repo.add_argument("--out", required=True)
     repo.add_argument("--plan-only", action="store_true")
     repo.add_argument("--all", action="store_true", help="every package of the Termux repository, not just the list")
+    repo.add_argument("--repo-name", choices=sorted(SOURCE_REPOS), default="main",
+                      help="with --all: which repository (main, x11, root or tur)")
+    repo.add_argument("--release-base", default=RELEASE_BASE,
+                      help="with --all: where our releases are published; the repository-switch packages point there")
     repo.add_argument("--only", help="with --all: only these packages (comma separated), for tests")
     repo.add_argument("--shard", help="with --all: K/N, the K-th of N lots of about equal size")
     repo.add_argument("--jobs", type=int, default=os.cpu_count() or 2, help="with --all: packages patched at once")

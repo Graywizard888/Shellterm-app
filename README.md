@@ -117,26 +117,35 @@ Updates install over the previous version as long as they are signed with the sa
 ## Packages
 
 Termux's prebuilt packages are renamed byte for byte (`com.termux` to `com.gwterm`, same length, nothing is compiled).
-Every package of Termux's main repository (about 3,000, 9.5 GB) is published from here as release assets:
+They are published from here as release assets, split into lots because a release holds at most 1,000 files:
+
+| Repository | Releases | Packages | How to use it |
+|---|---|---|---|
+| **main** (what `pkg` uses by default) | `apt-1` to `apt-4` | about 3,000, 9.5 GB | on by default |
+| **x11** (graphical programs) | `apt-x11-1`, `apt-x11-2` | about 1,200, 5.5 GB | `pkg install x11-repo` |
+| **root** (for rooted phones) | `apt-root-1` | about 100, 0.2 GB | `pkg install root-repo` |
+| **TUR** (the community repository, a separate project from Termux) | `apt-tur-1` to `apt-tur-4` | about 600, 11 GB | `pkg install tur-repo` |
+
+Each release is a flat apt repository: `deb [trusted=yes] https://github.com/Graywizard888/Shellterm-app/releases/download/apt-1 /`
+(and so on). The `x11-repo`, `root-repo` and `tur-repo` packages are rewritten so that they point at these releases
+instead of Termux's servers, which would serve packages that do not run in this app.
 
 | What | Where |
 |---|---|
-| **Packages** | The releases `apt-1` to `apt-4`: the patched `.deb` files in four lots (a package always stays in the same lot; a release holds at most 1,000 files), each with a flat apt index |
-| **apt source lines** | `deb [trusted=yes] https://github.com/Graywizard888/Shellterm-app/releases/download/apt-N /` for N = 1 to 4 |
-| **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, apt pointed at the four releases; used when Termux's own download fails |
+| **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, apt pointed at the four main releases; used when Termux's own download fails |
 | **Older apps** | Versions up to 1.0.2 read the earlier repository on GitHub Pages (`https://graywizard888.github.io/Shellterm-app/apt`). It is no longer rebuilt and stays as it was |
 
 Everything is built by the **Packages** workflow (Actions tab). Started by hand, or by itself every Monday at 03:23 UTC
 to pick up Termux's updates, it patches, checks and publishes; on a
 pull request it only checks (each package is downloaded, patched, verified and deleted again, nothing is stored). Each
 package is checked for the old name in paths, content and checksums, for PAX tar headers that dpkg refuses, and that
-`dpkg-deb` can read and unpack it. Four jobs run in parallel, one per lot.
+`dpkg-deb` can read and unpack it. One job runs per lot (11 of them, in parallel).
 
 ```bash
 python3 packages/patch_termux.py --help
 python3 -m unittest discover -s packages   # the patcher's tests
 # try a few packages on your own machine (downloads them, patches, checks, deletes):
-python3 packages/patch_termux.py repo --all --only jq,wget --check --discard --out /tmp/out
+python3 packages/patch_termux.py repo --all --repo-name main --only jq,wget --check --discard --out /tmp/out
 ```
 
 ---
