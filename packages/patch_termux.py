@@ -529,8 +529,35 @@ def dpkg_check(deb: Path, entry: Entry, work: Path) -> list[str]:
 
 
 def process_package(entry: Entry, base: str, overrides: dict[str, bytes], out: Path, scratch: Path, check: bool,
-                    discard: bool) -> dict:
-    """Downloads one package, patches it, and (with check) verifies it. Returns a small report."""
+                    discard: bool, index_url: str | None = None) -> dict:
+    """Downloads one package, patches it, and (with check) verifies it. Returns a small report.
+
+    A run takes 25 minutes, and Termux publishes while it runs: the index read at the start can name a file that is
+    gone by the time it is asked for (a newer version replaced it). On such a 404 the index is read again (given
+    [index_url]): the package's newer version is used instead, and a package Termux removed is skipped with a warning.
+    That is Termux's change, not a problem of ours; only a file still listed but missing stays a problem."""
+    report = process_package_once(entry, base, overrides, out, scratch, check, discard)
+    if not index_url or not any("HTTP Error 404" in problem for problem in report["problems"]):
+        return report
+    try:
+        fresh = [e for e in parse_index_entries(fetch(index_url).decode()) if e.name == entry.name]
+    except RuntimeError:
+        return report  # the index itself cannot be read now: keep the original problem
+    if any(e.version == entry.version for e in fresh):
+        return report
+    if not fresh:
+        report["problems"] = []
+        report["warnings"].append(f"{entry.name}: no longer in Termux's index, skipped")
+        report.pop("file", None)
+        return report
+    newest = fresh[-1]
+    replaced = process_package_once(newest, base, overrides, out, scratch, check, discard)
+    replaced["warnings"].append(f"{entry.name}: Termux replaced {entry.version} by {newest.version} during the run")
+    return replaced
+
+
+def process_package_once(entry: Entry, base: str, overrides: dict[str, bytes], out: Path, scratch: Path, check: bool,
+                         discard: bool) -> dict:
     started = time.time()
     work = Path(tempfile.mkdtemp(prefix=entry.name + ".", dir=scratch))
     report: dict = {"name": entry.name, "version": entry.version, "size": entry.size, "file": deb_file_name(entry),
@@ -635,7 +662,7 @@ def cmd_repo(args: argparse.Namespace) -> None:
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(process_package, e, source.base,
                                source_overrides(e.name, args.release_base) if args.repo_name == "main" else {},
-                               out, scratch, args.check, args.discard)
+                               out, scratch, args.check, args.discard, f"{source.base}/{source.index}")
                    for e in sorted(plan, key=lambda e: -e.size)]
         for done, future in enumerate(concurrent.futures.as_completed(futures), 1):
             report = future.result()
