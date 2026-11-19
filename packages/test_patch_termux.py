@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 from pathlib import Path
 
 import patch_termux as pt
@@ -616,6 +617,68 @@ class PublishRelease(unittest.TestCase):
                 pr.local_files(tmp),
                 {"a.deb": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
             )
+
+
+class IndexChangedDuringRun(unittest.TestCase):
+    """Termux publishes while a 25 minute run is going: the index read at the start can name files that are gone."""
+
+    def entry(self, version):
+        return pt.Entry("ncdu", version, f"pool/main/n/ncdu/ncdu_{version}_aarch64.deb", "0" * 64, 10, (), ())
+
+    def index(self, *versions):
+        return "\n\n".join(
+            f"Package: ncdu\nVersion: {v}\nFilename: pool/main/n/ncdu/ncdu_{v}_aarch64.deb\nSHA256: {'0' * 64}\nSize: 10"
+            for v in versions
+        ).encode()
+
+    def run_with(self, results, fresh_index):
+        """results: version -> report problems; fresh_index: bytes the re-read of the index gives (or an error)."""
+        calls = []
+
+        def once(entry, *args):
+            calls.append(entry.version)
+            return {"name": entry.name, "version": entry.version, "size": 10, "file": f"{entry.name}_{entry.version}.deb",
+                    "problems": results[entry.version], "warnings": []}
+
+        def fetch(url):
+            if isinstance(fresh_index, Exception):
+                raise fresh_index
+            return fresh_index
+
+        with mock.patch.object(pt, "process_package_once", once), mock.patch.object(pt, "fetch", fetch):
+            report = pt.process_package(self.entry("1.23.0"), "b", {}, Path("o"), Path("s"), True, True, "https://i/Packages")
+        return report, calls
+
+    NOT_FOUND = ["ncdu: RuntimeError: Could not fetch https://x/ncdu_1.23.0_aarch64.deb: HTTP Error 404: Not Found"]
+
+    def test_the_newer_version_is_used_when_the_old_file_is_gone(self):
+        report, calls = self.run_with({"1.23.0": self.NOT_FOUND, "1.24.0": []}, self.index("1.24.0"))
+        self.assertEqual(calls, ["1.23.0", "1.24.0"])
+        self.assertEqual(report["problems"], [])
+        self.assertEqual(report["version"], "1.24.0")
+        self.assertIn("replaced 1.23.0 by 1.24.0", report["warnings"][-1])
+
+    def test_a_package_termux_removed_is_skipped_not_failed(self):
+        report, calls = self.run_with({"1.23.0": self.NOT_FOUND}, self.index())
+        self.assertEqual(calls, ["1.23.0"])
+        self.assertEqual(report["problems"], [])
+        self.assertNotIn("file", report)
+        self.assertIn("no longer in Termux's index", report["warnings"][0])
+
+    def test_a_file_still_listed_but_missing_stays_a_problem(self):
+        report, calls = self.run_with({"1.23.0": self.NOT_FOUND}, self.index("1.23.0"))
+        self.assertEqual(report["problems"], self.NOT_FOUND)
+        self.assertEqual(calls, ["1.23.0"])
+
+    def test_other_problems_are_never_retried(self):
+        report, calls = self.run_with({"1.23.0": ["ncdu: still has the old name"]}, self.index("1.24.0"))
+        self.assertEqual(report["problems"], ["ncdu: still has the old name"])
+        self.assertEqual(calls, ["1.23.0"])
+
+    def test_an_unreadable_index_keeps_the_original_problem(self):
+        report, calls = self.run_with({"1.23.0": self.NOT_FOUND}, RuntimeError("offline"))
+        self.assertEqual(report["problems"], self.NOT_FOUND)
+        self.assertEqual(calls, ["1.23.0"])
 
 
 if __name__ == "__main__":
