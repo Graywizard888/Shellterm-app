@@ -488,7 +488,6 @@ class RepositoryTable(unittest.TestCase):
         self.assertEqual(len(tags), len(set(tags)))
         self.assertIn("apt-1", tags)
         self.assertIn("apt-x11-2", tags)
-        self.assertIn("apt-tur-4", tags)
         self.assertNotIn("apt-main-1", tags)  # main keeps the plain names
 
     def test_workflow_matrix_matches_the_table(self):
@@ -516,16 +515,16 @@ class RepositorySwitches(unittest.TestCase):
                             ("./md5sums", b"")])
         return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
 
-    def test_only_the_three_switch_packages_get_overrides(self):
+    def test_only_the_two_switch_packages_get_overrides(self):
         self.assertTrue(pt.source_overrides("x11-repo", "https://r.test"))
         self.assertTrue(pt.source_overrides("root-repo", "https://r.test"))
-        self.assertTrue(pt.source_overrides("tur-repo", "https://r.test"))
+        self.assertEqual(pt.source_overrides("tur-repo", "https://r.test"), {})
         self.assertEqual(pt.source_overrides("git", "https://r.test"), {})
 
-    def test_tur_list_names_every_lot(self):
-        (content,) = pt.source_overrides("tur-repo", "https://r.test").values()
+    def test_x11_list_names_every_lot(self):
+        (content,) = pt.source_overrides("x11-repo", "https://r.test").values()
         lines = [l for l in content.decode().splitlines() if l.startswith("deb ")]
-        self.assertEqual(lines, [f"deb [trusted=yes] https://r.test/apt-tur-{n} /" for n in range(1, 5)])
+        self.assertEqual(lines, [f"deb [trusted=yes] https://r.test/apt-x11-{n} /" for n in range(1, 3)])
 
     def test_sources_list_points_at_our_releases_and_checksums_follow(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -550,8 +549,8 @@ class RepositorySwitches(unittest.TestCase):
 class PackageUrls(unittest.TestCase):
     def test_epoch_colon_is_not_escaped(self):
         self.assertEqual(
-            pt.package_url_path("pool/tur/openssl_1:3.5.2_aarch64.deb"),
-            "pool/tur/openssl_1:3.5.2_aarch64.deb",
+            pt.package_url_path("pool/main/openssl_1:3.5.2_aarch64.deb"),
+            "pool/main/openssl_1:3.5.2_aarch64.deb",
         )
 
     def test_other_characters_are_escaped(self):

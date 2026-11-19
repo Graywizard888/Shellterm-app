@@ -5,9 +5,9 @@ name: Packages
 #   main   3,000+ packages, 9.5 GB: what pkg uses by default      -> releases apt-1 .. apt-4
 #   x11    graphical programs, 5.5 GB (pkg install x11-repo)       -> releases apt-x11-1, apt-x11-2
 #   root   programs for rooted phones, 0.2 GB (pkg install root-repo) -> release apt-root-1
-#   tur    the community repository, 11 GB (pkg install tur-repo)  -> releases apt-tur-1 .. apt-tur-4
-# Each lot is its own job (a release holds at most 1,000 files, a runner about 14 GB of disk). The x11, root and tur
+# Each lot is its own job (a release holds at most 1,000 files, a runner about 14 GB of disk). The x11 and root
 # repositories are opt-in, as in Termux: the packages that switch them on are rewritten to point at these releases.
+# (TUR, the community repository, is not hosted: its index names many files that are gone.)
 #
 # Where things go (when the workflow is started by hand with "Run workflow", and every Monday at 03:23 UTC):
 #   the releases above     the patched .deb files, each lot with a flat apt index (Packages, Packages.gz,
@@ -51,10 +51,6 @@ jobs:
           - {repo: x11, shard: 1, shards: 2, tag: apt-x11-1}
           - {repo: x11, shard: 2, shards: 2, tag: apt-x11-2}
           - {repo: root, shard: 1, shards: 1, tag: apt-root-1}
-          - {repo: tur, shard: 1, shards: 4, tag: apt-tur-1}
-          - {repo: tur, shard: 2, shards: 4, tag: apt-tur-2}
-          - {repo: tur, shard: 3, shards: 4, tag: apt-tur-3}
-          - {repo: tur, shard: 4, shards: 4, tag: apt-tur-4}
     steps:
       - uses: actions/checkout@v7
 

@@ -98,8 +98,7 @@ def fetch(url: str, attempts: int = 6) -> bytes:
 
 
 def package_url_path(filename: str) -> str:
-    """The Filename of an index entry as a URL path. A colon (the epoch, 1:2.0) stays as it is: the TUR server
-    redirects it to the release asset, where GitHub has turned it into a dot, but not the %3A form."""
+    """The Filename of an index entry as a URL path. A colon (the epoch, 1:2.0) stays as it is, as apt asks for it."""
     return urllib.parse.quote(filename, safe="/:")
 
 
@@ -136,16 +135,14 @@ class SourceRepo:
 
 SOURCE_REPOS = {
     "main": SourceRepo(TERMUX_REPO, "dists/stable/main/binary-aarch64/Packages", 4),
-    # The three below are opt-in in Termux (pkg install x11-repo / root-repo / tur-repo); here too.
+    # The two below are opt-in in Termux (pkg install x11-repo / root-repo); here too.
     "x11": SourceRepo("https://packages-cf.termux.dev/apt/termux-x11", "dists/x11/main/binary-aarch64/Packages", 2),
     "root": SourceRepo("https://packages-cf.termux.dev/apt/termux-root", "dists/root/stable/binary-aarch64/Packages", 1),
-    # The community repository, a separate project from Termux itself.
-    "tur": SourceRepo("https://tur.kcubeterm.com", "dists/tur-packages/tur/binary-aarch64/Packages", 4),
 }
 
 # The packages that switch a repository on: what they install under etc/apt/sources.list.d points at Termux's servers,
 # which serve packages built for com.termux, so it is rewritten to point at our releases.
-REPO_SWITCHES = {"x11-repo": ("x11", "x11.list"), "root-repo": ("root", "root.list"), "tur-repo": ("tur", "tur.list")}
+REPO_SWITCHES = {"x11-repo": ("x11", "x11.list"), "root-repo": ("root", "root.list")}
 
 
 def release_tag(repo: str, lot: int) -> str:
@@ -894,7 +891,7 @@ def main(argv: list[str]) -> None:
     repo.add_argument("--plan-only", action="store_true")
     repo.add_argument("--all", action="store_true", help="every package of the Termux repository, not just the list")
     repo.add_argument("--repo-name", choices=sorted(SOURCE_REPOS), default="main",
-                      help="with --all: which repository (main, x11, root or tur)")
+                      help="with --all: which repository (main, x11 or root)")
     repo.add_argument("--release-base", default=RELEASE_BASE,
                       help="with --all: where our releases are published; the repository-switch packages point there")
     repo.add_argument("--only", help="with --all: only these packages (comma separated), for tests")

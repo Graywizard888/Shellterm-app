@@ -124,11 +124,11 @@ They are published from here as release assets, split into lots because a releas
 | **main** (what `pkg` uses by default) | `apt-1` to `apt-4` | about 3,000, 9.5 GB | on by default |
 | **x11** (graphical programs) | `apt-x11-1`, `apt-x11-2` | about 1,200, 5.5 GB | `pkg install x11-repo` |
 | **root** (for rooted phones) | `apt-root-1` | about 100, 0.2 GB | `pkg install root-repo` |
-| **TUR** (the community repository, a separate project from Termux) | `apt-tur-1` to `apt-tur-4` | about 600, 11 GB | `pkg install tur-repo` |
 
 Each release is a flat apt repository: `deb [trusted=yes] https://github.com/Graywizard888/Shellterm-app/releases/download/apt-1 /`
-(and so on). The `x11-repo`, `root-repo` and `tur-repo` packages are rewritten so that they point at these releases
-instead of Termux's servers, which would serve packages that do not run in this app.
+(and so on). The `x11-repo` and `root-repo` packages are rewritten so that they point at these releases
+instead of Termux's servers, which would serve packages that do not run in this app. TUR (the community repository) is
+not hosted.
 
 | What | Where |
 |---|---|
