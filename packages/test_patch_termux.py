@@ -81,7 +81,7 @@ def sample_deb() -> bytes:
         ("./control", b"Package: tool\nVersion: 1.0\nArchitecture: aarch64\nDescription: tool for com.termux\n"),
         ("./md5sums", md5sums),
         ("./conffiles", f"{PREFIX_OLD}/etc/tool.conf\n".encode()),
-        ("./postinst", f"#!{PREFIX_OLD}/bin/sh\necho done\n".encode()),
+        ("./postinst", f"#!{PREFIX_OLD}/bin/sh\necho done\nLD_PRELOAD='' {PREFIX_OLD}/bin/py3compile -p tool\nunset LD_PRELOAD\n".encode()),
     ])
     return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
 
@@ -108,6 +108,21 @@ class PatchBytes(unittest.TestCase):
 
     def test_broken_gzip_does_not_crash(self):
         self.assertEqual(pt.patch_file("x.gz", b"\x1f\x8bnot really gzip"), b"\x1f\x8bnot really gzip")
+
+
+class KeepPreload(unittest.TestCase):
+    def test_empty_assignments_and_unsets_are_turned_into_twins_of_the_same_length(self):
+        for before in [b"LD_PRELOAD='' py3compile -p x", b'LD_PRELOAD="" py3compile', b"LD_PRELOAD= py3compile",
+                       b"FOO=1 LD_PRELOAD='' run", b"unset LD_PRELOAD", b"x; LD_PRELOAD=; y"]:
+            after = pt.keep_preload(before)
+            self.assertEqual(len(after), len(before), before)
+            self.assertNotIn(b"LD_PRELOAD", after, before)
+            self.assertIn(b"NO_PRELOAD", after, before)
+
+    def test_a_preload_that_is_set_or_read_stays(self):
+        for same in [b"LD_PRELOAD=/lib/x.so prog", b"echo $LD_PRELOAD", b'export LD_PRELOAD="$HOOK"',
+                     b"NOT_LD_PRELOAD='' y", b"nothing here"]:
+            self.assertEqual(pt.keep_preload(same), same)
 
 
 class PatchDeb(unittest.TestCase):
@@ -138,6 +153,12 @@ class PatchDeb(unittest.TestCase):
     def test_control_scripts_are_patched(self):
         self.assertIn(PREFIX_NEW.encode(), self.control["./postinst"][1])
         self.assertIn(PREFIX_NEW.encode(), self.control["./conffiles"][1])
+
+    def test_scripts_keep_the_exec_hook(self):
+        script = self.control["./postinst"][1].decode()
+        self.assertNotIn("LD_PRELOAD", script)
+        self.assertIn(f"NO_PRELOAD='' {PREFIX_NEW}/bin/py3compile -p tool", script)
+        self.assertIn("unset NO_PRELOAD", script)
 
     def test_md5sums_match_the_patched_files(self):
         listed = dict(line.split("  ", 1)[::-1] for line in self.control["./md5sums"][1].decode().splitlines())
