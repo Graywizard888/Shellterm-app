@@ -561,6 +561,26 @@ class PackageUrls(unittest.TestCase):
 
 
 class PublishRelease(unittest.TestCase):
+    def fake_run(self, code, stderr=""):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, code, stdout="", stderr=stderr)
+
+        return run, calls
+
+    def test_an_existing_release_is_left_alone(self):
+        run, calls = self.fake_run(0)
+        pr.ensure_release("o/r", "apt-1", "t", "n", run=run)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_rate_limit_is_not_taken_for_a_missing_release(self):
+        run, calls = self.fake_run(1, "gh: HTTP 403: API rate limit exceeded for user ID 1")
+        with self.assertRaises(subprocess.CalledProcessError):
+            pr.ensure_release("o/r", "apt-1", "t", "n", run=run)
+        self.assertEqual(len(calls), 1)
+
     def test_plan_sends_only_what_changed_and_the_index_last(self):
         existing = {"a.deb": "1", "b.deb": "2", "gone.deb": "3", "Packages": "old", "Release": "same"}
         local = {"a.deb": "1", "b.deb": "changed", "new.deb": "4", "Packages": "new", "Release": "same", "Packages.gz": "z"}
