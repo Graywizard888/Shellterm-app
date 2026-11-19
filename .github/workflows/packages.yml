@@ -3,7 +3,7 @@ name: Packages
 # Takes every package of Termux's main repository (3,000+, about 9.5 GB) and renames the app inside them
 # (com.termux -> com.gwterm; same length, so the binaries stay valid). Nothing is compiled.
 #
-# Where things go (only when the workflow is started by hand, with "Run workflow"):
+# Where things go (when the workflow is started by hand with "Run workflow", and every Monday at 03:23 UTC):
 #   releases apt-1 .. apt-4   the patched .deb files, split into four lots of about equal size, each with a flat apt
 #                             index (Packages, Packages.gz, Packages.xz, Release). A release holds at most 1,000 files,
 #                             so one release cannot take them all.
@@ -15,6 +15,8 @@ name: Packages
 # headers dpkg refuses, and that dpkg itself can read and unpack them.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * 1"
   pull_request:
     paths:
       - "packages/**"
@@ -52,7 +54,7 @@ jobs:
       # publishing, the patched files are kept for the upload (about 2.4 GB per lot).
       - name: Patch and check this lot
         env:
-          PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+          PUBLISH: ${{ github.event_name != 'pull_request' }}
         run: |
           flags=(--check)
           [ "$PUBLISH" = true ] || flags+=(--discard)
@@ -82,13 +84,13 @@ jobs:
           EOF
 
       - name: Make the flat apt repository
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         run: bash packages/make-flat-repo.sh work/debs
 
       # The release is rebuilt from scratch each run: files of packages that are gone from Termux are removed,
       # everything else is replaced. Up to 1,000 files fit in one release; a lot has about 760.
       - name: Publish release apt-${{ matrix.shard }}
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -133,7 +135,7 @@ jobs:
         run: python3 packages/patch_termux.py verify --bootstrap out/bootstrap-aarch64.zip
 
       - name: Publish the bootstrap release
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

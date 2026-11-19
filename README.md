@@ -121,12 +121,13 @@ Every package of Termux's main repository (about 3,000, 9.5 GB) is published fro
 
 | What | Where |
 |---|---|
-| **Packages** | The releases `apt-1` to `apt-4`: the patched `.deb` files in four lots of about equal size (a release holds at most 1,000 files), each with a flat apt index |
+| **Packages** | The releases `apt-1` to `apt-4`: the patched `.deb` files in four lots (a package always stays in the same lot; a release holds at most 1,000 files), each with a flat apt index |
 | **apt source lines** | `deb [trusted=yes] https://github.com/Graywizard888/Shellterm-app/releases/download/apt-N /` for N = 1 to 4 |
 | **Bootstrap fallback** | The `bootstrap` release: a patched copy of Termux's bootstrap zip with its SHA-256, apt pointed at the four releases; used when Termux's own download fails |
 | **Older apps** | Versions up to 1.0.2 read the earlier repository on GitHub Pages (`https://graywizard888.github.io/Shellterm-app/apt`). It is no longer rebuilt and stays as it was |
 
-Everything is built by the **Packages** workflow (Actions tab). Started by hand it patches, checks and publishes; on a
+Everything is built by the **Packages** workflow (Actions tab). Started by hand, or by itself every Monday at 03:23 UTC
+to pick up Termux's updates, it patches, checks and publishes; on a
 pull request it only checks (each package is downloaded, patched, verified and deleted again, nothing is stored). Each
 package is checked for the old name in paths, content and checksums, for PAX tar headers that dpkg refuses, and that
 `dpkg-deb` can read and unpack it. Four jobs run in parallel, one per lot.

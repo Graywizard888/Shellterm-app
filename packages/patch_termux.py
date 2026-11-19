@@ -424,7 +424,10 @@ def patch_deb_file(src: Path, dst: Path, work: Path) -> None:
     # Same member order as the stock package: debian-binary, control, data.
     order = {"debian-binary": 0, "control.tar.xz": 1, "data.tar.xz": 2}
     out.sort(key=lambda item: order.get(item[0], 3))
-    write_ar_from_files(dst, out)
+    # Written under a temporary name and renamed, so a package file that exists is always a complete one.
+    partial = dst.with_name(dst.name + ".part")
+    write_ar_from_files(partial, out)
+    partial.replace(dst)
 
 
 def deb_file_name(entry: Entry) -> str:
@@ -437,18 +440,18 @@ def deb_file_name(entry: Entry) -> str:
 
 
 def split_into_shards(plan: list[Entry], shard: str) -> list[Entry]:
-    """Shard "2/4" is the second of four lots of about equal download size (biggest packages are dealt out first)."""
+    """Shard "2/4" is the second of four lots. A package's lot depends only on its name, so it stays in the same
+    release from one run to the next (a package that moved would be missing for a while during an update)."""
     number, _, total = shard.partition("/")
     number, total = int(number), int(total)
     if not 1 <= number <= total:
         raise SystemExit(f"--shard {shard}: expected K/N with 1 <= K <= N")
-    lots: list[list[Entry]] = [[] for _ in range(total)]
-    sizes = [0] * total
-    for entry in sorted(plan, key=lambda e: (-e.size, e.name)):
-        smallest = sizes.index(min(sizes))
-        lots[smallest].append(entry)
-        sizes[smallest] += entry.size
-    return sorted(lots[number - 1], key=lambda e: e.name)
+    return sorted((e for e in plan if shard_of(e.name, total) == number), key=lambda e: e.name)
+
+
+def shard_of(name: str, total: int) -> int:
+    """Lot number, 1..total, of a package."""
+    return int(hashlib.sha256(name.encode()).hexdigest(), 16) % total + 1
 
 
 def dpkg_check(deb: Path, entry: Entry, work: Path) -> list[str]:
@@ -475,7 +478,8 @@ def process_package(entry: Entry, out: Path, scratch: Path, check: bool, discard
     """Downloads one package, patches it, and (with check) verifies it. Returns a small report."""
     started = time.time()
     work = Path(tempfile.mkdtemp(prefix=entry.name + ".", dir=scratch))
-    report: dict = {"name": entry.name, "version": entry.version, "size": entry.size, "problems": [], "warnings": []}
+    report: dict = {"name": entry.name, "version": entry.version, "size": entry.size, "file": deb_file_name(entry),
+                    "problems": [], "warnings": []}
     try:
         stock = work / "stock.deb"
         fetch_file(f"{TERMUX_REPO}/{urllib.parse.quote(entry.filename)}", stock, entry.sha256)
@@ -525,8 +529,28 @@ def cmd_repo(args: argparse.Namespace) -> None:
         return
 
     out = Path(args.out)
-    shutil.rmtree(out, ignore_errors=True)
-    out.mkdir(parents=True)
+    done_before: set[str] = set()
+    if args.all and args.resume and args.report and Path(args.report).exists():
+        # Carry on after an interrupted run: packages the report lists without problems (and whose file is there) are
+        # kept and skipped; anything else in the folder, such as a half-written file, is removed.
+        file_of = {e.name: deb_file_name(e) for e in plan}
+        for line in Path(args.report).read_text().splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue  # a half-written last line
+            name = record.get("name")
+            if name in file_of and not record["problems"] and (out / file_of[name]).is_file():
+                done_before.add(name)
+        keep = {file_of[name] for name in done_before}
+        for stray in out.glob("*"):
+            if stray.name not in keep:
+                stray.unlink()
+        plan = [e for e in plan if e.name not in done_before]
+        print(f"Resuming: {len(done_before)} packages already done, {len(plan)} to go")
+    else:
+        shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
 
     if not args.all:
         def work(entry: Entry) -> str:
@@ -549,7 +573,7 @@ def cmd_repo(args: argparse.Namespace) -> None:
     failed: list[str] = []
     warned = 0
     started = time.time()
-    report_file = open(args.report, "w") if args.report else None
+    report_file = open(args.report, "a" if done_before else "w") if args.report else None
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(process_package, e, out, scratch, args.check, args.discard)
                    for e in sorted(plan, key=lambda e: -e.size)]
@@ -811,6 +835,8 @@ def main(argv: list[str]) -> None:
     repo.add_argument("--discard", action="store_true", help="with --all: delete each package once checked")
     repo.add_argument("--scratch", help="with --all: folder for temporary files")
     repo.add_argument("--report", help="with --all: write one JSON line per package here")
+    repo.add_argument("--resume", action="store_true",
+                      help="with --all and --report: skip packages an earlier, interrupted run already finished")
     repo.set_defaults(run=cmd_repo)
 
     boot = sub.add_parser("bootstrap", help="download and patch the bootstrap zip")

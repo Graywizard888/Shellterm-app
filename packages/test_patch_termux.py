@@ -442,10 +442,19 @@ class Shards(unittest.TestCase):
         self.assertEqual(sorted(names), sorted(e.name for e in plan))
         self.assertEqual(len(names), len(set(names)))
 
-    def test_shards_are_about_equal_in_size(self):
-        plan = self.entries([1000, 900, 800, 700, 100, 100, 100, 100, 50, 50])
-        sizes = [sum(e.size for e in pt.split_into_shards(plan, f"{k}/4")) for k in range(1, 5)]
-        self.assertLess(max(sizes) - min(sizes), 300, sizes)
+    def test_a_package_stays_in_its_lot_whatever_else_is_in_the_plan(self):
+        small = self.entries([5, 10, 20, 30, 40, 50, 60, 70])
+        large = self.entries([5, 10, 20, 30, 40, 50, 60, 70] + [999] * 40)
+        for k in range(1, 5):
+            in_small = {e.name for e in pt.split_into_shards(small, f"{k}/4")}
+            in_large = {e.name for e in pt.split_into_shards(large, f"{k}/4")}
+            self.assertTrue(in_small <= in_large)
+
+    def test_lots_are_roughly_equal_in_count(self):
+        plan = self.entries([1] * 3000)
+        counts = [len(pt.split_into_shards(plan, f"{k}/4")) for k in range(1, 5)]
+        self.assertLess(max(counts) - min(counts), 150, counts)
+        self.assertLess(max(counts), 900, counts)  # a release holds at most 1,000 files
 
     def test_bad_shard_is_refused(self):
         with self.assertRaises(SystemExit):
