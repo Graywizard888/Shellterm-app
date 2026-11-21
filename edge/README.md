@@ -42,6 +42,16 @@ Menu names in Cloudflare's dashboard move around now and then; the idea of each 
 
 Without the secrets, both workflows skip their Cloudflare steps and everything works from GitHub as before.
 
+## Size limit
+
+The copy never lets the bucket hold more than **9.5 GB** (a little under R2's free 10 GB). Before a lot is copied, what the
+rest of the bucket holds plus the lot's size must fit; if not, nothing of that lot is copied, the run shows a warning
+(*R2 copy skipped*, also in its summary) and carries on. R2 then keeps that lot's older files, which are a consistent set,
+and GitHub's release stays the source of truth. The release on GitHub is published before the copy, so a skipped copy never
+breaks the run or the app. If the packages grow past the limit, the warning is how you find out; either pay for more R2
+storage (about $0.015 per GB a month) and raise the limit with a repository *variable* (Settings, Secrets and variables,
+Actions, Variables) named `R2_MAX_BYTES` (a number of bytes), or accept that the biggest lot stays on its older copy.
+
 ## Notes
 
 - The workflow copies the index files (`Packages*`, `Release`) after the packages and removes stale files last, so apt never

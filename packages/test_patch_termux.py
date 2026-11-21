@@ -728,6 +728,8 @@ class SyncToR2(unittest.TestCase):
 
             def fake_aws(env, *args, capture=False):
                 calls.append(args)
+                if "Contents[].[Key,Size]" in args:
+                    return json.dumps([["apt-1/a.deb", 5], ["apt-2/b.deb", 7]])
                 return json.dumps(["apt-1/a.deb", "apt-1/gone.deb"]) if capture else None
 
             with mock.patch.object(sync_r2, "aws", fake_aws):
@@ -735,10 +737,37 @@ class SyncToR2(unittest.TestCase):
         kinds = [(c[0], c[1]) for c in calls]
         self.assertEqual(
             kinds,
-            [("s3", "sync"), ("s3", "cp"), ("s3", "cp"), ("s3", "cp"), ("s3api", "list-objects-v2"), ("s3", "rm")],
+            [("s3api", "list-objects-v2"), ("s3", "sync"), ("s3", "cp"), ("s3", "cp"), ("s3", "cp"),
+             ("s3api", "list-objects-v2"), ("s3", "rm")],
         )
-        self.assertTrue(calls[1][2].endswith("Packages") and calls[3][2].endswith("Release"))
-        self.assertEqual(calls[5][1:3], ("rm", "s3://bucket/apt-1/gone.deb"))
+        self.assertTrue(calls[2][2].endswith("Packages") and calls[4][2].endswith("Release"))
+        self.assertEqual(calls[6][1:3], ("rm", "s3://bucket/apt-1/gone.deb"))
+
+    def test_the_bucket_never_goes_over_the_limit(self):
+        sizes = {"apt-1/a.deb": 4_000, "apt-2/b.deb": 3_000, "apt-3/c.deb": 2_000, "bootstrap/z": 100}
+        # apt-1 is replaced by its new size; everything else stays.
+        self.assertEqual(sync_r2.fits(sizes, "apt-1", 4_400, 9_500), (True, 9_500))
+        self.assertEqual(sync_r2.fits(sizes, "apt-1", 4_401, 9_500), (False, 9_501))
+        self.assertEqual(sync_r2.fits({}, "apt-1", 100, 9_500), (True, 100))
+        self.assertEqual(sync_r2.fits(sizes, "apt-1", 0, 9_500), (True, 5_100), "prefixes are matched with the slash")
+
+    def test_sizes_are_read_from_pages_that_may_be_null_or_nested(self):
+        self.assertEqual(sync_r2.parse_sizes(None), {})
+        self.assertEqual(sync_r2.parse_sizes([None, [["a/x", 1]], ["a/y", "2"], None]), {"a/x": 1, "a/y": 2})
+
+    def test_a_lot_that_does_not_fit_copies_nothing_and_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.deb").write_bytes(b"x" * 100)
+            calls = []
+
+            def fake_aws(env, *args, capture=False):
+                calls.append(args)
+                return json.dumps([["apt-2/b.deb", 950]])
+
+            with mock.patch.object(sync_r2, "aws", fake_aws), mock.patch.object(sync_r2, "note") as note:
+                self.assertFalse(sync_r2.sync("apt-1", tmp, "bucket", "https://e", max_bytes=1_000))
+        self.assertEqual(len(calls), 1, "only the size listing")
+        self.assertIn("apt-1", note.call_args[0][0])
 
     def test_an_empty_prefix_lists_nothing(self):
         with mock.patch.object(sync_r2, "aws", lambda *a, **k: "null"):
