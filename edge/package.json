@@ -1,0 +1,6 @@
+{
+  "name": "shellterm-mirror",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test" }
+}

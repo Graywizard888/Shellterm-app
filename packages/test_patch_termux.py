@@ -2,7 +2,9 @@
 import gzip
 import hashlib
 import io
+import json
 import lzma
+import os
 import re
 import subprocess
 import tarfile
@@ -14,6 +16,7 @@ from pathlib import Path
 
 import patch_termux as pt
 import publish_release as pr
+import sync_r2
 
 OLD = "com.termux"
 NEW = "com.gwterm"
@@ -703,6 +706,72 @@ class PublishRelease(unittest.TestCase):
                 pr.local_files(tmp),
                 {"a.deb": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
             )
+
+
+class SyncToR2(unittest.TestCase):
+    def test_only_what_the_folder_no_longer_has_is_stale(self):
+        self.assertEqual(sync_r2.stale(["a.deb", "old.deb", "Packages"], ["a.deb", "Packages", "new.deb"]), ["old.deb"])
+        self.assertEqual(sync_r2.stale([], ["a.deb"]), [])
+
+    def test_the_copy_is_skipped_without_a_bucket(self):
+        with mock.patch.dict(os.environ, {"R2_BUCKET": "", "R2_ACCOUNT_ID": ""}), mock.patch.object(
+            sync_r2, "sync"
+        ) as sync:
+            self.assertEqual(sync_r2.main(["sync_r2.py", "apt-1", "x"]), 0)
+            sync.assert_not_called()
+
+    def test_files_go_first_then_the_index_then_the_removals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a.deb", "Packages", "Packages.gz", "Release"):
+                (Path(tmp) / name).write_bytes(b"x")
+            calls = []
+
+            def fake_aws(env, *args, capture=False):
+                calls.append(args)
+                if "Contents[].[Key,Size]" in args:
+                    return json.dumps([["apt-1/a.deb", 5], ["apt-2/b.deb", 7]])
+                return json.dumps(["apt-1/a.deb", "apt-1/gone.deb"]) if capture else None
+
+            with mock.patch.object(sync_r2, "aws", fake_aws):
+                sync_r2.sync("apt-1", tmp, "bucket", "https://e")
+        kinds = [(c[0], c[1]) for c in calls]
+        self.assertEqual(
+            kinds,
+            [("s3api", "list-objects-v2"), ("s3", "sync"), ("s3", "cp"), ("s3", "cp"), ("s3", "cp"),
+             ("s3api", "list-objects-v2"), ("s3", "rm")],
+        )
+        self.assertTrue(calls[2][2].endswith("Packages") and calls[4][2].endswith("Release"))
+        self.assertEqual(calls[6][1:3], ("rm", "s3://bucket/apt-1/gone.deb"))
+
+    def test_the_bucket_never_goes_over_the_limit(self):
+        sizes = {"apt-1/a.deb": 4_000, "apt-2/b.deb": 3_000, "apt-3/c.deb": 2_000, "bootstrap/z": 100}
+        # apt-1 is replaced by its new size; everything else stays.
+        self.assertEqual(sync_r2.fits(sizes, "apt-1", 4_400, 9_500), (True, 9_500))
+        self.assertEqual(sync_r2.fits(sizes, "apt-1", 4_401, 9_500), (False, 9_501))
+        self.assertEqual(sync_r2.fits({}, "apt-1", 100, 9_500), (True, 100))
+        self.assertEqual(sync_r2.fits(sizes, "apt-1", 0, 9_500), (True, 5_100), "prefixes are matched with the slash")
+
+    def test_sizes_are_read_from_pages_that_may_be_null_or_nested(self):
+        self.assertEqual(sync_r2.parse_sizes(None), {})
+        self.assertEqual(sync_r2.parse_sizes([None, [["a/x", 1]], ["a/y", "2"], None]), {"a/x": 1, "a/y": 2})
+
+    def test_a_lot_that_does_not_fit_copies_nothing_and_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.deb").write_bytes(b"x" * 100)
+            calls = []
+
+            def fake_aws(env, *args, capture=False):
+                calls.append(args)
+                return json.dumps([["apt-2/b.deb", 950]])
+
+            with mock.patch.object(sync_r2, "aws", fake_aws), mock.patch.object(sync_r2, "note") as note:
+                self.assertFalse(sync_r2.sync("apt-1", tmp, "bucket", "https://e", max_bytes=1_000))
+        self.assertEqual(len(calls), 1, "only the size listing")
+        self.assertIn("apt-1", note.call_args[0][0])
+
+    def test_an_empty_prefix_lists_nothing(self):
+        with mock.patch.object(sync_r2, "aws", lambda *a, **k: "null"):
+            self.assertEqual(sync_r2.remote_names({"endpoint": "e"}, "b", "apt-1"), [])
 
 
 class IndexChangedDuringRun(unittest.TestCase):

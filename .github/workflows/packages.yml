@@ -14,6 +14,9 @@ name: Packages
 #                          Packages.xz, Release). Created once, afterwards only their files are replaced.
 #   release bootstrap      Termux's bootstrap zip patched for this app, with apt pointed at apt-1 .. apt-4
 #                          (the app's fallback when Termux's own download fails).
+#   R2 bucket (optional)   a second copy of main (apt-1 .. apt-4) and of the bootstrap, served by the edge mirror in
+#                          edge/ from a nearby Cloudflare server. Skipped when the R2 secrets are not set; see
+#                          edge/README.md.
 #
 # On a pull request the same work is done as a check: every package is downloaded, patched, verified and deleted
 # again, and nothing is published. Packages are checked for the old name in paths, content and checksums, PAX tar
@@ -119,6 +122,19 @@ jobs:
             "Lot ${{ matrix.shard }} of ${{ matrix.shards }} of the ${{ matrix.repo }} packages of the Shellterm package repository: Termux's packages renamed for com.gwterm, as a flat apt repository. apt reads it with: deb [trusted=yes] https://github.com/$GITHUB_REPOSITORY/releases/download/$tag /  The files are replaced by every run of the Packages workflow; this release is never recreated."
           echo "Released: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
 
+      # The copy behind the edge mirror (edge/README.md). Only main: it is 9.5 GB and fits R2's free 10 GB, and the copy
+      # never takes the bucket over 9.5 GB (a lot that would is skipped with a warning). It runs
+      # after the GitHub release, which stays the source of truth: the Worker falls back to it for a file R2 lacks.
+      - name: Copy to R2 ${{ matrix.tag }}
+        if: github.event_name != 'pull_request' && matrix.repo == 'main'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_MAX_BYTES: ${{ vars.R2_MAX_BYTES }}
+        run: python3 packages/sync_r2.py "${{ matrix.tag }}" work/debs
+
   bootstrap:
     name: Bootstrap
     needs: shard
@@ -154,3 +170,13 @@ jobs:
           gh release view bootstrap > /dev/null 2>&1 || \
             gh release create bootstrap --title "Base system" --notes "Patched copy of Termux's bootstrap, the app's fallback. Built by the Packages workflow." --prerelease
           gh release upload bootstrap out/bootstrap-aarch64.zip out/bootstrap-aarch64.zip.sha256 --clobber
+
+      - name: Copy the bootstrap to R2
+        if: github.event_name != 'pull_request'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_MAX_BYTES: ${{ vars.R2_MAX_BYTES }}
+        run: python3 packages/sync_r2.py bootstrap out
