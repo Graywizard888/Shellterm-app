@@ -41,6 +41,9 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
+      # Publishing spends the token's 5,000 requests an hour, shared by every lot (about 4,000 in all). Two lots at a
+      # time keep the run inside one window; a pull request only checks and sends nothing, so it runs all at once.
+      max-parallel: ${{ github.event_name == 'pull_request' && 7 || 2 }}
       matrix:
         # Keep in step with SOURCE_REPOS in packages/patch_termux.py (a unit test compares the release names).
         include:
@@ -104,7 +107,7 @@ jobs:
       # The workflow's own token may make about 1,000 API requests an hour for the whole repository, and every uploaded
       # file is one: the seven lots together send about 4,000. Add a personal access token as the repository secret
       # PACKAGES_TOKEN (see the README) and it is used instead, with 5,000 an hour of its own. Either way only files
-      # that changed are sent, and when the limit is reached the script waits for it to reset and carries on.
+      # that changed are sent, and when the limit is reached the script waits for it to reset (up to 95 minutes) and carries on.
       - name: Publish release ${{ matrix.tag }}
         if: github.event_name != 'pull_request'
         env:
