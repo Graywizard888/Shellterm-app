@@ -1,10 +1,16 @@
 // Shellterm package mirror, a Cloudflare Worker.
 //
 // apt and the first-run download ask this address instead of github.com, which can be slow on some networks:
-//   /apt-1 .. /apt-4 and /bootstrap   served from the R2 bucket (a copy made by the Packages workflow); a file that is
-//                                      not in the bucket yet is fetched from the GitHub release instead
-//   /apt-x11-1, /apt-x11-2, /apt-root-1  not copied; fetched from the GitHub release once and kept on Cloudflare's edge
+//   /apt-1 .. /apt-4 and /bootstrap   served from the R2 bucket when there is one (a copy made by the Packages
+//                                      workflow); a file that is not in the bucket, or no bucket at all, means the
+//                                      GitHub release is fetched instead
+//   /apt-x11-1, /apt-x11-2, /apt-root-1  not copied; always fetched from the GitHub release
 // Same paths as the release downloads: /<release tag>/<file>.
+//
+// Every answer carries a Cache-Control. With Workers Caching on (edge/wrangler.toml) Cloudflare keeps the answers in
+// front of this Worker, so a file is fetched from R2 or GitHub once and then served from the edge, and byte ranges are
+// cut from the cached whole file (this code then sees no Range header). The Cache API calls below only matter on a
+// custom domain: on workers.dev they do nothing, and are harmless.
 
 const GITHUB = "https://github.com/Graywizard888/Shellterm-app/releases/download";
 const R2_TAGS = new Set(["apt-1", "apt-2", "apt-3", "apt-4", "bootstrap"]);

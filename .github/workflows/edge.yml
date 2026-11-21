@@ -30,14 +30,33 @@ jobs:
       - name: Test the Worker
         run: node --test
 
+      # The R2 bucket is optional. With the R2_BUCKET secret set, the binding is added to a copy of wrangler.toml; without
+      # it the Worker serves everything from the GitHub releases (cached on the edge). A repository variable EDGE_CACHE
+      # set to "off" removes Workers Caching, in case the account's plan does not accept it.
       - name: Deploy the Worker
         if: github.event_name != 'pull_request'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          EDGE_CACHE: ${{ vars.EDGE_CACHE }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "Cloudflare secrets are not set: skipping the deploy (see edge/README.md)"
             exit 0
           fi
-          npx --yes wrangler@4 deploy
+          cp wrangler.toml wrangler.deploy.toml
+          if [ "$EDGE_CACHE" = "off" ]; then
+            python3 - <<'PY'
+          import re
+          text = open("wrangler.deploy.toml").read()
+          open("wrangler.deploy.toml", "w").write(re.sub(r"\[cache\]\nenabled = true\n", "", text))
+          PY
+          fi
+          if [ -n "$R2_BUCKET" ]; then
+            printf '\n[[r2_buckets]]\nbinding = "PACKAGES"\nbucket_name = "%s"\n' "$R2_BUCKET" >> wrangler.deploy.toml
+            echo "Deploying with the R2 bucket $R2_BUCKET"
+          else
+            echo "Deploying without R2: packages come from the GitHub releases"
+          fi
+          npx --yes wrangler@4 deploy --config wrangler.deploy.toml

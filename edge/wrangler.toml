@@ -3,6 +3,10 @@ main = "worker.js"
 compatibility_date = "2026-11-01"
 workers_dev = true
 
-[[r2_buckets]]
-binding = "PACKAGES"
-bucket_name = "shellterm-packages"
+# Workers Caching: Cloudflare keeps the Worker's answers (by their Cache-Control) in front of it, so a package is fetched
+# from R2 or GitHub once and then served from the edge, byte ranges included. Needs wrangler 4.69 or newer.
+[cache]
+enabled = true
+
+# The R2 bucket binding (`PACKAGES`, bucket named by the R2_BUCKET secret) is added by .github/workflows/edge.yml when
+# that secret is set. Without it the Worker serves everything from the GitHub releases.

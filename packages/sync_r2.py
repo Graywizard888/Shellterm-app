@@ -3,7 +3,7 @@
 
     sync_r2.py PREFIX FOLDER      e.g.  sync_r2.py apt-1 work/debs      (needs the aws CLI)
 
-Environment: R2_ACCOUNT_ID, R2_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (the R2 API token's keys). When R2_BUCKET
+Environment: R2_ACCOUNT_ID (or CLOUDFLARE_ACCOUNT_ID), R2_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (the R2 API token's keys). When R2_BUCKET
 is empty nothing is done and the run goes on: the mirror is optional and the Worker falls back to GitHub.
 
 Size cap: the bucket never holds more than R2_MAX_BYTES (default 9,500,000,000, a bit under R2's free 10 GB). Before a
@@ -131,7 +131,7 @@ def main(argv):
         print(__doc__)
         return 2
     bucket = os.environ.get("R2_BUCKET", "")
-    account = os.environ.get("R2_ACCOUNT_ID", "")
+    account = os.environ.get("R2_ACCOUNT_ID") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     if not bucket or not account:
         print("R2 is not set up (R2_BUCKET / R2_ACCOUNT_ID empty): skipping the copy")
         return 0
