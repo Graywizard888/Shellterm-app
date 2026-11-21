@@ -650,6 +650,51 @@ class PublishRelease(unittest.TestCase):
             pr.retrying(action, lambda: (900, 0), sleep=slept.append, tries=3)
         self.assertEqual(len(slept), 2)
 
+    LIMITED = subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: API rate limit exceeded for user ID 1")
+
+    def test_a_rate_limit_is_waited_out_for_longer_than_the_tries(self):
+        calls, slept = [], []
+
+        def action():
+            calls.append(1)
+            if len(calls) < 30:
+                raise self.LIMITED
+            return "ok"
+
+        # The API claims plenty of quota (the real run saw this); the wait still grows and the tries do not count.
+        self.assertEqual(pr.retrying(action, lambda: (4000, 0), sleep=slept.append, now=lambda: 1000, tries=3, max_wait=10**6), "ok")
+        self.assertEqual(slept[:4], [60, 120, 240, 300])
+        self.assertEqual(len(slept), 29)
+
+    def test_a_rate_limit_that_never_lifts_gives_up_after_max_wait(self):
+        slept = []
+
+        def action():
+            raise self.LIMITED
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            pr.retrying(action, lambda: (4000, 0), sleep=slept.append, now=lambda: 1000, max_wait=1000)
+        self.assertGreaterEqual(sum(slept), 1000)
+        self.assertLess(sum(slept), 1000 + pr.LONG_PAUSE)
+
+    def test_a_used_up_quota_sleeps_until_the_reset_even_when_limited(self):
+        slept, calls = [], []
+
+        def action():
+            calls.append(1)
+            if len(calls) < 2:
+                raise self.LIMITED
+            return "ok"
+
+        pr.retrying(action, lambda: (0, 3000), sleep=slept.append, now=lambda: 1000)
+        self.assertEqual(slept, [2015])
+
+    def test_only_rate_limit_messages_count_as_limited(self):
+        self.assertTrue(pr.is_rate_limited(self.LIMITED))
+        self.assertTrue(pr.is_rate_limited(subprocess.CalledProcessError(1, "gh", stderr="You have exceeded a secondary Rate Limit")))
+        self.assertFalse(pr.is_rate_limited(subprocess.CalledProcessError(1, "gh", stderr="HTTP 502")))
+        self.assertFalse(pr.is_rate_limited(subprocess.CalledProcessError(1, "gh")))
+
     def test_local_files_are_hashed(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "a.deb").write_bytes(b"abc")

@@ -7,7 +7,7 @@ limit exceeded for installation". Three things make a run fit:
   * a personal access token (secret PACKAGES_TOKEN) has its own 5,000 requests an hour,
   * files already on the release with the same SHA-256 are not sent again (a weekly run changes few packages, and a
     run that stopped half way continues instead of starting over),
-  * when the limit is reached anyway, it sleeps until the limit resets and goes on.
+  * when the limit is reached anyway, it keeps waiting (up to MAX_WAIT, longer than one hourly window) and goes on.
 
     publish_release.py TAG FOLDER [TITLE NOTES]   (needs the gh CLI, GH_TOKEN and GITHUB_REPOSITORY in the environment)
 
@@ -25,9 +25,11 @@ import time
 # Sent last, in this order.
 INDEX_FILES = ["Packages", "Packages.gz", "Packages.xz", "Release"]
 BATCH = 40
-TRIES = 40  # at 60 s a try, and the whole wait until a reset when the quota is gone: lots queue up behind each other for hours
+TRIES = 10  # for errors that are not a rate limit (a dropped connection, a 502)
+MAX_WAIT = 95 * 60  # seconds a rate limit may be waited out in all: more than one hourly window, so a reset is always reached
 LOW_QUOTA = 100
 PAUSE = 60
+LONG_PAUSE = 300
 
 
 def sha256_file(path):
@@ -82,25 +84,49 @@ def seconds_to_wait(remaining, reset, now):
     return PAUSE
 
 
-def retrying(action, quota, sleep=time.sleep, now=time.time, tries=TRIES):
-    """Runs [action] until it works, at most [tries] times, sleeping as [quota] (-> remaining, reset) advises."""
-    for attempt in range(1, tries + 1):
+def is_rate_limited(error):
+    """True when GitHub refused the request because of a rate limit (primary or secondary)."""
+    text = f"{error.stderr or ''} {error.output or ''}".lower()
+    return "rate limit" in text
+
+
+def retrying(action, quota, sleep=time.sleep, now=time.time, tries=TRIES, max_wait=MAX_WAIT):
+    """Runs [action] until it works, sleeping as [quota] (-> remaining, reset) advises.
+
+    A rate-limit error is waited out for up to [max_wait] seconds in all (a quota the API still shows as plentiful
+    is no reason to hurry: the wait grows to LONG_PAUSE instead of staying at PAUSE). Any other error is tried
+    [tries] times."""
+    attempt, waited = 0, 0
+    while True:
+        attempt += 1
         try:
             return action()
         except subprocess.CalledProcessError as error:
-            if attempt == tries:
+            limited = is_rate_limited(error)
+            if (waited >= max_wait) if limited else (attempt >= tries):
                 raise
             try:
                 remaining, reset = quota()
             except Exception:  # the quota call itself may be what is limited
                 remaining, reset = 0, now() + 60
             wait = seconds_to_wait(remaining, reset, now())
+            if limited and wait <= PAUSE:
+                wait = min(PAUSE * 2 ** (attempt - 1), LONG_PAUSE)
+            wait = min(wait, max(max_wait - waited, PAUSE)) if limited else wait
             print(f"Attempt {attempt} failed ({error}); waiting {int(wait)} s", flush=True)
             sleep(wait)
+            waited += wait
 
 
 def gh(*args, capture=False):
-    result = subprocess.run(["gh", *args], check=True, text=True, stdout=subprocess.PIPE if capture else None)
+    # stderr is captured so a failure carries GitHub's message (is_rate_limited reads it) and is still shown in the log.
+    try:
+        result = subprocess.run(
+            ["gh", *args], check=True, text=True, stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE
+        )
+    except subprocess.CalledProcessError as error:
+        print((error.stderr or "").strip(), file=sys.stderr, flush=True)
+        raise
     return result.stdout if capture else None
 
 
