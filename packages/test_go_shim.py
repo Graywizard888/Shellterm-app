@@ -97,6 +97,61 @@ class PatchTests(unittest.TestCase):
         self.assertTrue(gs.is_patched(pt.patch_file("data/data/com.gwterm/files/usr/bin/pup", program)))
 
 
+class PackageTests(unittest.TestCase):
+    """The packages workflow's own check: patched packages must carry the stub, and a package that lacks it is reported."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.root, True)
+
+    def deb(self, program: bytes, app: str = "com.termux") -> bytes:
+        import patch_termux as pt
+        import test_patch_termux as tp
+        elf = tp.ELF_LIKE.replace(b"com.termux", app.encode())
+        data = tp.make_tar([(f"./data/data/{app}/files/usr/bin/pup", program), (f"./data/data/{app}/files/usr/bin/tool", elf)])
+        control = tp.make_tar([("./control", b"Package: pup\nVersion: 1.0\nArchitecture: aarch64\nDescription: x\n")])
+        return pt.write_ar([("debian-binary", b"2.0\n"), ("control.tar.xz", control), ("data.tar.xz", data)])
+
+    def verify(self, blob: bytes, strict: bool):
+        import patch_termux as pt
+        path = self.root / "p.deb"
+        path.write_bytes(blob)
+        work = self.root / f"w{len(list(self.root.iterdir()))}"
+        work.mkdir()
+        warnings, programs = [], []
+        problems = pt.verify_deb_file("pup", path, work, None if strict else warnings, programs)
+        return problems, warnings, programs
+
+    def patched_deb(self, program: bytes) -> bytes:
+        import patch_termux as pt
+        src, dst, work = self.root / "src.deb", self.root / "dst.deb", self.root / "work"
+        src.write_bytes(self.deb(program))
+        work.mkdir(exist_ok=True)
+        pt.patch_deb_file(src, dst, work)
+        return dst.read_bytes()
+
+    def test_a_patched_package_passes_and_names_its_go_program(self):
+        problems, warnings, programs = self.verify(self.patched_deb(make_go_program()), strict=False)
+        self.assertEqual((problems, warnings), ([], []))
+        self.assertEqual(programs, ["pup: pup"])
+
+    def test_a_go_program_without_the_stub_is_reported(self):
+        unpatched = self.deb(make_go_program(), app="com.gwterm")       # right name, no stub
+        problems, warnings, programs = self.verify(unpatched, strict=False)
+        self.assertEqual(problems, [])                   # a warning in the run: one program must not stop a whole lot
+        self.assertTrue(any("no start-up stub" in w for w in warnings))
+        self.assertEqual(programs, [])
+        strict_problems, _, _ = self.verify(unpatched, strict=True)       # `verify` command
+        self.assertTrue(any("no start-up stub" in p for p in strict_problems))
+
+    def test_programs_that_are_not_go_without_libc_are_not_mentioned(self):
+        for program in (make_go_program(needed=True), make_go_program(buildinfo=False)):
+            problems, warnings, programs = self.verify(self.patched_deb(program), strict=False)
+            self.assertEqual((problems, warnings, programs), ([], [], []))
+
+
 @unittest.skipIf(unicorn is None, "the unicorn CPU emulator is not installed")
 class RunTests(unittest.TestCase):
     STACK_TOP = 0x7ff000000000

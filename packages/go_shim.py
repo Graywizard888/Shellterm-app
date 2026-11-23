@@ -95,6 +95,17 @@ def _needs_libraries(data: bytes, headers) -> bool:
     return False
 
 
+def state(data: bytes) -> str | None:
+    """None for a file this module leaves alone, "patched" for a Go program without libc that has the stub and
+    "unpatched" for one that still needs it (so the stub could not be added: that program will not work)."""
+    if _entry_offset(data) is None or GO_BUILDINFO not in data:
+        return None
+    headers = _program_headers(data)
+    if not any(h[0] == PT_INTERP and data[h[2]:h[2] + h[4]] == INTERP for h in headers) or _needs_libraries(data, headers):
+        return None
+    return "patched" if is_patched(data) else "unpatched"
+
+
 def patch_go_entry(data: bytes) -> bytes:
     """Adds the start-up shim to a Go program without libc (a PIE started through linker64). Anything else, and a
     program that already has the shim, is returned unchanged. The result always has the same length as the input."""

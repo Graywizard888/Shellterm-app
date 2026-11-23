@@ -97,6 +97,8 @@ jobs:
           print(f"- {len(rows)} packages, {sum(r['size'] for r in rows) / 1e6:.0f} MB downloaded, "
                 f"{sum(r.get('patched_size', 0) for r in rows) / 1e6:.0f} MB patched")
           print(f"- {len(bad)} with problems, {len(warn)} with warnings")
+          go = [g for r in rows for g in r.get("go_programs", [])]
+          print(f"- Go programs without libc with the start-up stub: {len(go)}" + (f" ({', '.join(sorted(go)[:30])})" if go else ""))
           for r in bad:
               for problem in r["problems"][:5]:
                   print(f"  - problem: {problem}")
