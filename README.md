@@ -150,9 +150,18 @@ a personal access token when the repository has the secret `PACKAGES_TOKEN`: on 
 settings > Personal access tokens > Fine-grained tokens*, create one for this repository only with *Contents: Read and
 write* (a classic token needs `public_repo`), then add it under this repository's *Settings > Secrets and variables >
 Actions* as `PACKAGES_TOKEN`. It gets 5,000 requests an hour of its own. Without the secret the workflow falls back
-to its own token. In both cases `packages/publish_release.py` sends only files that changed (compared by SHA-256), so a
-re-run continues where the last one stopped and a weekly run sends little, and it waits for the limit to reset when it
-is reached.
+to its own token.
+
+A **second token doubles the allowance**, because the limit belongs to the GitHub account, not to the repository. Sign
+in to another account, invite it to this repository as a collaborator with *Write* access (and accept), then create a
+*classic* token there with only the `public_repo` scope (a fine-grained token cannot reach another account's
+repository), and add it as the secret `PACKAGES_TOKEN_2`. Lots start on alternating tokens, and when one is limited the
+other takes over at once; the run waits only when both are.
+
+Both secrets are optional. A token that is missing, expired, revoked or has lost write access is skipped with a
+`::warning::` in the log and the run carries on with the rest, down to the workflow's own token, so removing a token
+later never fails the workflow. `packages/publish_release.py` sends only files that changed (compared by SHA-256), so a
+re-run continues where the last one stopped and a weekly run sends little.
 
 ```bash
 python3 packages/patch_termux.py --help
