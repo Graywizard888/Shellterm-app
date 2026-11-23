@@ -708,6 +708,134 @@ class PublishRelease(unittest.TestCase):
             )
 
 
+class TokenPools(unittest.TestCase):
+    AUTH = subprocess.CalledProcessError(1, "gh", stderr="gh: Bad credentials (HTTP 401)")
+    LIMITED = subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: API rate limit exceeded for user ID 1")
+
+    def setUp(self):
+        self._token = os.environ.get("GH_TOKEN")
+        self.addCleanup(lambda: os.environ.pop("GH_TOKEN", None) if self._token is None else os.environ.update(GH_TOKEN=self._token))
+
+    def pool(self, *labels):
+        return pr.TokenPool([(label, f"v-{label}") for label in labels])
+
+    def make(self, environ, refused=()):
+        def check(label, value, repo):
+            os.environ["GH_TOKEN"] = value  # as the real check does
+            return label not in refused, "Bad credentials"
+
+        return pr.make_pool("o/r", environ, check=check)
+
+    def test_checking_tokens_does_not_lose_the_workflows_own(self):
+        os.environ["GH_TOKEN"] = "own"
+        pool = self.make(os.environ | {"PACKAGES_TOKEN": "a"})
+        self.assertEqual(self.labels(pool), ["PACKAGES_TOKEN", "the workflow's own token"])
+
+    def labels(self, pool):
+        return [label for label, _ in pool.tokens]
+
+    def test_without_personal_tokens_only_the_workflows_own_is_used(self):
+        pool = self.make({"GH_TOKEN": "own", "PACKAGES_TOKEN": "", "PACKAGES_TOKEN_2": " "})
+        self.assertEqual(self.labels(pool), ["the workflow's own token"])
+        self.assertEqual(os.environ["GH_TOKEN"], "own")
+
+    def test_both_tokens_then_the_own_one_and_lots_alternate(self):
+        env = {"GH_TOKEN": "own", "PACKAGES_TOKEN": "a", "PACKAGES_TOKEN_2": "b"}
+        self.assertEqual(self.labels(self.make({**env, "TOKEN_START": "0"})), ["PACKAGES_TOKEN", "PACKAGES_TOKEN_2", "the workflow's own token"])
+        pool = self.make({**env, "TOKEN_START": "1"})
+        self.assertEqual(self.labels(pool), ["PACKAGES_TOKEN_2", "PACKAGES_TOKEN", "the workflow's own token"])
+        self.assertEqual(os.environ["GH_TOKEN"], "b")
+        self.assertEqual(self.labels(self.make({**env, "TOKEN_START": "5"}))[0], "PACKAGES_TOKEN_2")
+        self.assertEqual(self.labels(self.make({**env, "TOKEN_START": "oops"}))[0], "PACKAGES_TOKEN")
+
+    def test_a_refused_token_is_skipped_and_the_run_goes_on(self):
+        env = {"GH_TOKEN": "own", "PACKAGES_TOKEN": "a", "PACKAGES_TOKEN_2": "b"}
+        self.assertEqual(self.labels(self.make(env, refused=("PACKAGES_TOKEN_2",))), ["PACKAGES_TOKEN", "the workflow's own token"])
+        self.assertEqual(self.labels(self.make(env, refused=("PACKAGES_TOKEN", "PACKAGES_TOKEN_2"))), ["the workflow's own token"])
+
+    def test_the_same_token_twice_counts_once(self):
+        pool = self.make({"GH_TOKEN": "own", "PACKAGES_TOKEN": "a", "PACKAGES_TOKEN_2": "a"})
+        self.assertEqual(self.labels(pool), ["PACKAGES_TOKEN", "the workflow's own token"])
+
+    def test_no_token_at_all_stops_with_a_message(self):
+        with self.assertRaises(SystemExit):
+            self.make({})
+
+    def test_a_token_is_only_dropped_when_github_refuses_it(self):
+        original = pr.gh
+        self.addCleanup(lambda: setattr(pr, "gh", original))
+        for out, error, expected in [
+            ("true", None, True),
+            ("false", None, False),
+            (None, self.AUTH, False),
+            (None, subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)"), False),
+            (None, self.LIMITED, True),
+            (None, subprocess.CalledProcessError(1, "gh", stderr="HTTP 502"), True),
+        ]:
+            def fake(*args, capture=False, out=out, error=error):
+                if error:
+                    raise error
+                return out + "\n"
+
+            pr.gh = fake
+            self.assertEqual(pr.usable("T", "v", "o/r")[0], expected, (out, error))
+
+    def test_a_limited_token_hands_over_without_waiting(self):
+        pool, slept, calls = self.pool("one", "two"), [], []
+
+        def action():
+            calls.append(os.environ["GH_TOKEN"])
+            if len(calls) == 1:
+                raise self.LIMITED
+            return "ok"
+
+        self.assertEqual(pr.retrying(action, lambda: (0, 5000), sleep=slept.append, now=lambda: 1000, pool=pool), "ok")
+        self.assertEqual(calls, ["v-one", "v-two"])
+        self.assertEqual(slept, [])
+
+    def test_it_waits_only_when_every_token_is_limited_and_only_for_the_first_reset(self):
+        pool, slept, calls, clock = self.pool("one", "two"), [], [], [1000]
+
+        def sleep(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+
+        def action():
+            calls.append(os.environ["GH_TOKEN"])
+            if len(calls) < 3:
+                raise self.LIMITED
+            return "ok"
+
+        quotas = iter([(0, 1600), (0, 3000)])  # one resets at 1600, two at 3000
+        self.assertEqual(pr.retrying(action, lambda: next(quotas), sleep=sleep, now=lambda: clock[0], pool=pool), "ok")
+        self.assertEqual(slept, [615])
+        self.assertEqual(calls, ["v-one", "v-two", "v-one"])
+
+    def test_a_refused_token_is_dropped_and_the_next_one_tried_at_once(self):
+        pool, slept, calls = self.pool("one", "own"), [], []
+
+        def action():
+            calls.append(os.environ["GH_TOKEN"])
+            if os.environ["GH_TOKEN"] == "v-one":
+                raise self.AUTH
+            return "ok"
+
+        self.assertEqual(pr.retrying(action, lambda: (4000, 0), sleep=slept.append, pool=pool), "ok")
+        self.assertEqual(calls, ["v-one", "v-own"])
+        self.assertEqual([label for label, _ in pool.tokens], ["own"])
+        self.assertEqual(slept, [])
+
+    def test_the_last_token_is_never_dropped(self):
+        pool = self.pool("own")
+
+        def action():
+            raise self.AUTH
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            pr.retrying(action, lambda: (4000, 0), sleep=lambda s: None, tries=2, pool=pool)
+        self.assertEqual(len(pool.tokens), 1)
+
+
 class SyncToR2(unittest.TestCase):
     def test_only_what_the_folder_no_longer_has_is_stale(self):
         self.assertEqual(sync_r2.stale(["a.deb", "old.deb", "Packages"], ["a.deb", "Packages", "new.deb"]), ["old.deb"])

@@ -109,12 +109,17 @@ jobs:
       # everything else is replaced. Up to 1,000 files fit in one release; a lot has about 760.
       # The workflow's own token may make about 1,000 API requests an hour for the whole repository, and every uploaded
       # file is one: the seven lots together send about 4,000. Add a personal access token as the repository secret
-      # PACKAGES_TOKEN (see the README) and it is used instead, with 5,000 an hour of its own. Either way only files
-      # that changed are sent, and when the limit is reached the script waits for it to reset (up to 95 minutes) and carries on.
+      # PACKAGES_TOKEN (see the README) and it is used first, with 5,000 an hour of its own; a second one from another
+      # GitHub account as PACKAGES_TOKEN_2 doubles that. Both are optional: a missing, expired or revoked token is
+      # skipped with a warning and never fails the run, which falls back to the workflow's own token. Only files that
+      # changed are sent, and when every token is limited the script waits for the first reset (up to 95 minutes).
       - name: Publish release ${{ matrix.tag }}
         if: github.event_name != 'pull_request'
         env:
-          GH_TOKEN: ${{ secrets.PACKAGES_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          PACKAGES_TOKEN_2: ${{ secrets.PACKAGES_TOKEN_2 }}
+          TOKEN_START: ${{ strategy.job-index }}
         run: |
           tag="${{ matrix.tag }}"
           python3 packages/publish_release.py "$tag" work/debs \
