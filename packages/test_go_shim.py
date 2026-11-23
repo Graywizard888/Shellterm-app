@@ -139,12 +139,10 @@ class PackageTests(unittest.TestCase):
 
     def test_a_go_program_without_the_stub_is_reported(self):
         unpatched = self.deb(make_go_program(), app="com.gwterm")       # right name, no stub
-        problems, warnings, programs = self.verify(unpatched, strict=False)
-        self.assertEqual(problems, [])                   # a warning in the run: one program must not stop a whole lot
-        self.assertTrue(any("no start-up stub" in w for w in warnings))
-        self.assertEqual(programs, [])
-        strict_problems, _, _ = self.verify(unpatched, strict=True)       # `verify` command
-        self.assertTrue(any("no start-up stub" in p for p in strict_problems))
+        for strict in (False, True):                     # in a run (with warnings) and in the `verify` command
+            problems, warnings, programs = self.verify(unpatched, strict=strict)
+            self.assertTrue(any("no start-up stub" in p for p in problems), "it fails the run")
+            self.assertEqual((warnings, programs), ([], []))
 
     def test_programs_that_are_not_go_without_libc_are_not_mentioned(self):
         for program in (make_go_program(needed=True), make_go_program(buildinfo=False)):

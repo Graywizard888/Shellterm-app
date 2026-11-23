@@ -851,8 +851,7 @@ def compressed_has_old(name: str, data: bytes) -> bool:
 def verify_deb_file(name: str, path: Path, work: Path, warnings: list[str] | None = None,
                     go_programs: list[str] | None = None) -> list[str]:
     """Problems found in a patched package. `go_programs` collects the Go programs without libc that carry the start-up
-    stub (see go_shim.py); one that still lacks it is a problem when `warnings` is None and a warning otherwise, so that
-    a single program cannot stop the publishing of a whole lot (the warning says which one will not work)."""
+    stub (see go_shim.py); one that still lacks it is a problem, because that program will not work."""
     problems = []
     members = read_ar_to_dir(path, work)
     names = [n for n, _ in members]
@@ -883,8 +882,7 @@ def verify_deb_file(name: str, path: Path, work: Path, warnings: list[str] | Non
                     if shim == "patched" and go_programs is not None:
                         go_programs.append(f"{name}: {member.name.removeprefix('./').rsplit('/', 1)[-1]}")
                     elif shim == "unpatched":
-                        message = f"{name}: Go program {member.name} has no start-up stub and will not work under linker64"
-                        (problems if warnings is None else warnings).append(message)
+                        problems.append(f"{name}: Go program {member.name} has no start-up stub and will not work under linker64")
                 elif member.name.removeprefix("./") == "md5sums":
                     listed = content
     if listed:
