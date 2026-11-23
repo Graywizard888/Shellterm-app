@@ -116,7 +116,8 @@ Updates install over the previous version as long as they are signed with the sa
 
 ## Packages
 
-Termux's prebuilt packages are renamed byte for byte (`com.termux` to `com.gwterm`, same length, nothing is compiled).
+Termux's prebuilt packages are renamed byte for byte (`com.termux` to `com.gwterm`, same length, nothing is compiled). One more change: Go programs built without libc (such as `pup`)
+get a 116-byte start-up stub, because they would otherwise read `linker64` as their first argument (`packages/go_shim.py`).
 They are published from here as release assets, split into lots because a release holds at most 1,000 files:
 
 | Repository | Releases | Packages | How to use it |

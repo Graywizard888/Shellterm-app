@@ -4,6 +4,7 @@
 Termux binaries have their install path baked in (/data/data/com.termux/files/usr). Shellterm's app ID is exactly as
 long as `com.termux`, so the name can be swapped byte for byte: no offsets move, nothing is rebuilt and ELF files
 stay valid. What does change is every checksum that covers a patched file, and those are rewritten here too.
+The one other change is go_shim.py: Go programs without libc get a small start-up stub (same file size).
 
 Commands:
   repo       download the packages listed in bootstrap-packages.txt (and everything they depend on), patch them.
@@ -39,6 +40,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from go_shim import patch_go_entry
+
 OLD = b"com.termux"
 NEW = b"com.gwterm"
 assert len(OLD) == len(NEW), "the swap only works if both names have the same length"
@@ -60,7 +63,8 @@ def patch_bytes(data: bytes) -> bytes:
 
 
 def patch_file(name: str, data: bytes) -> bytes:
-    """Patches a file's content. Gzip files (man pages) are opened, patched and packed again, deterministically."""
+    """Patches a file's content. Gzip files (man pages) are opened, patched and packed again, deterministically.
+    The result of a non-gzip file always has the length of the input."""
     if name.endswith(".gz") and data[:2] == b"\x1f\x8b":
         try:
             raw = gzip.decompress(data)
@@ -69,7 +73,8 @@ def patch_file(name: str, data: bytes) -> bytes:
         if OLD not in raw:
             return data
         return gzip.compress(patch_bytes(raw), compresslevel=9, mtime=0)
-    return patch_bytes(data)
+    # Go programs without libc (pup, ...) need a start-up shim to run under linker64; any other file is returned as it is.
+    return patch_go_entry(patch_bytes(data))
 
 
 def patch_text(text: str) -> str:

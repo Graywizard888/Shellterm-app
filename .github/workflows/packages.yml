@@ -1,7 +1,8 @@
 name: Packages
 
 # Takes the packages of Termux's repositories and renames the app inside them (com.termux -> com.gwterm; same length,
-# so the binaries stay valid). Nothing is compiled.
+# so the binaries stay valid). Nothing is compiled; Go programs without libc (pup...) also get a tiny start-up stub
+# (packages/go_shim.py) so they work when started through linker64.
 #   main   3,000+ packages, 9.5 GB: what pkg uses by default      -> releases apt-1 .. apt-4
 #   x11    graphical programs, 5.5 GB (pkg install x11-repo)       -> releases apt-x11-1, apt-x11-2
 #   root   programs for rooted phones, 0.2 GB (pkg install root-repo) -> release apt-root-1
