@@ -65,7 +65,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev xz-utils
 
       - name: Test the patcher
-        run: python3 -m unittest discover -s packages -v
+        # unicorn (a CPU emulator) lets the Go start-up stub be run for real; if it cannot be installed those tests skip
+        run: |
+          python3 -m pip install --quiet unicorn || true
+          python3 -m unittest discover -s packages -v
 
       # With a pull request every package is deleted right after it is checked, so the disk never fills. When
       # publishing, the patched files are kept for the upload (about 2.4 GB per lot).
