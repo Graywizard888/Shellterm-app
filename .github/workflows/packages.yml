@@ -1,7 +1,8 @@
 name: Packages
 
 # Takes the packages of Termux's repositories and renames the app inside them (com.termux -> com.gwterm; same length,
-# so the binaries stay valid). Nothing is compiled.
+# so the binaries stay valid). Nothing is compiled; Go programs without libc (pup...) also get a tiny start-up stub
+# (packages/go_shim.py) so they work when started through linker64.
 #   main   3,000+ packages, 9.5 GB: what pkg uses by default      -> releases apt-1 .. apt-4
 #   x11    graphical programs, 5.5 GB (pkg install x11-repo)       -> releases apt-x11-1, apt-x11-2
 #   root   programs for rooted phones, 0.2 GB (pkg install root-repo) -> release apt-root-1
@@ -64,7 +65,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev xz-utils
 
       - name: Test the patcher
-        run: python3 -m unittest discover -s packages -v
+        # unicorn (a CPU emulator) lets the Go start-up stub be run for real; if it cannot be installed those tests skip
+        run: |
+          python3 -m pip install --quiet unicorn || true
+          python3 -m unittest discover -s packages -v
 
       # With a pull request every package is deleted right after it is checked, so the disk never fills. When
       # publishing, the patched files are kept for the upload (about 2.4 GB per lot).
@@ -93,6 +97,8 @@ jobs:
           print(f"- {len(rows)} packages, {sum(r['size'] for r in rows) / 1e6:.0f} MB downloaded, "
                 f"{sum(r.get('patched_size', 0) for r in rows) / 1e6:.0f} MB patched")
           print(f"- {len(bad)} with problems, {len(warn)} with warnings")
+          go = [g for r in rows for g in r.get("go_programs", [])]
+          print(f"- Go programs without libc with the start-up stub: {len(go)}" + (f" ({', '.join(sorted(go)[:30])})" if go else ""))
           for r in bad:
               for problem in r["problems"][:5]:
                   print(f"  - problem: {problem}")

@@ -1,6 +1,7 @@
 """Tests for patch_termux.py. Run: python3 -m unittest discover -s packages -v"""
 import gzip
 import hashlib
+import contextlib
 import io
 import json
 import lzma
@@ -713,6 +714,9 @@ class TokenPools(unittest.TestCase):
     LIMITED = subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: API rate limit exceeded for user ID 1")
 
     def setUp(self):
+        quiet = contextlib.redirect_stdout(io.StringIO())      # keep the `::warning::` lines under test out of the run's annotations
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
         self._token = os.environ.get("GH_TOKEN")
         self.addCleanup(lambda: os.environ.pop("GH_TOKEN", None) if self._token is None else os.environ.update(GH_TOKEN=self._token))
 
@@ -837,6 +841,12 @@ class TokenPools(unittest.TestCase):
 
 
 class SyncToR2(unittest.TestCase):
+    def setUp(self):
+        # What the code under test prints (GitHub's `::warning::` lines among them) must not show up as warnings in the run.
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
     def test_only_what_the_folder_no_longer_has_is_stale(self):
         self.assertEqual(sync_r2.stale(["a.deb", "old.deb", "Packages"], ["a.deb", "Packages", "new.deb"]), ["old.deb"])
         self.assertEqual(sync_r2.stale([], ["a.deb"]), [])

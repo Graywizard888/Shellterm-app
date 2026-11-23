@@ -4,6 +4,7 @@
 Termux binaries have their install path baked in (/data/data/com.termux/files/usr). Shellterm's app ID is exactly as
 long as `com.termux`, so the name can be swapped byte for byte: no offsets move, nothing is rebuilt and ELF files
 stay valid. What does change is every checksum that covers a patched file, and those are rewritten here too.
+The one other change is go_shim.py: Go programs without libc get a small start-up stub (same file size).
 
 Commands:
   repo       download the packages listed in bootstrap-packages.txt (and everything they depend on), patch them.
@@ -39,6 +40,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import go_shim
+from go_shim import patch_go_entry
+
 OLD = b"com.termux"
 NEW = b"com.gwterm"
 assert len(OLD) == len(NEW), "the swap only works if both names have the same length"
@@ -60,7 +64,8 @@ def patch_bytes(data: bytes) -> bytes:
 
 
 def patch_file(name: str, data: bytes) -> bytes:
-    """Patches a file's content. Gzip files (man pages) are opened, patched and packed again, deterministically."""
+    """Patches a file's content. Gzip files (man pages) are opened, patched and packed again, deterministically.
+    The result of a non-gzip file always has the length of the input."""
     if name.endswith(".gz") and data[:2] == b"\x1f\x8b":
         try:
             raw = gzip.decompress(data)
@@ -69,7 +74,8 @@ def patch_file(name: str, data: bytes) -> bytes:
         if OLD not in raw:
             return data
         return gzip.compress(patch_bytes(raw), compresslevel=9, mtime=0)
-    return patch_bytes(data)
+    # Go programs without libc (pup, ...) need a start-up shim to run under linker64; any other file is returned as it is.
+    return patch_go_entry(patch_bytes(data))
 
 
 def patch_text(text: str) -> str:
@@ -579,7 +585,7 @@ def process_package_once(entry: Entry, base: str, overrides: dict[str, bytes], o
     started = time.time()
     work = Path(tempfile.mkdtemp(prefix=entry.name + ".", dir=scratch))
     report: dict = {"name": entry.name, "version": entry.version, "size": entry.size, "file": deb_file_name(entry),
-                    "problems": [], "warnings": []}
+                    "problems": [], "warnings": [], "go_programs": []}
     try:
         stock = work / "stock.deb"
         fetch_file(f"{base}/{package_url_path(entry.filename)}", stock, entry.sha256)
@@ -593,7 +599,7 @@ def process_package_once(entry: Entry, base: str, overrides: dict[str, bytes], o
         if check:
             check_work = work / "check"
             check_work.mkdir()
-            report["problems"] += verify_deb_file(entry.name, patched, check_work, report["warnings"])
+            report["problems"] += verify_deb_file(entry.name, patched, check_work, report["warnings"], report["go_programs"])
             report["problems"] += dpkg_check(patched, entry, work)
         if discard:
             patched.unlink()
@@ -842,7 +848,10 @@ def compressed_has_old(name: str, data: bytes) -> bool:
     return False
 
 
-def verify_deb_file(name: str, path: Path, work: Path, warnings: list[str] | None = None) -> list[str]:
+def verify_deb_file(name: str, path: Path, work: Path, warnings: list[str] | None = None,
+                    go_programs: list[str] | None = None) -> list[str]:
+    """Problems found in a patched package. `go_programs` collects the Go programs without libc that carry the start-up
+    stub (see go_shim.py); one that still lacks it is a problem, because that program will not work."""
     problems = []
     members = read_ar_to_dir(path, work)
     names = [n for n, _ in members]
@@ -869,6 +878,11 @@ def verify_deb_file(name: str, path: Path, work: Path, warnings: list[str] | Non
                     warnings.append(f"{name}: old name inside the compressed file {member.name}")
                 if tar_name == data_name:
                     sums[member.name.removeprefix("./")] = md5_hex(content)
+                    shim = go_shim.state(content)
+                    if shim == "patched" and go_programs is not None:
+                        go_programs.append(f"{name}: {member.name.removeprefix('./').rsplit('/', 1)[-1]}")
+                    elif shim == "unpatched":
+                        problems.append(f"{name}: Go program {member.name} has no start-up stub and will not work under linker64")
                 elif member.name.removeprefix("./") == "md5sums":
                     listed = content
     if listed:
@@ -920,7 +934,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         print(problem, file=sys.stderr)
     if problems:
         sys.exit(f"{len(problems)} problems found")
-    print("Verified: no trace of the old name, all checksums match")
+    print("Verified: no trace of the old name, all checksums match, every Go program without libc has its start-up stub")
 
 
 # ----------------------------------------------------------------------------------------------------------------
